@@ -463,9 +463,9 @@ class HallucinationCorrectionPipeline:
     @staticmethod
     def _print_phase(title: str) -> None:
         """Print a formatted phase header."""
-        print(f"\n{'─' * 55}")
+        print(f"\n{'-' * 55}")
         print(f"  {title}")
-        print(f"{'─' * 55}")
+        print(f"{'-' * 55}")
 
     @staticmethod
     def _print_verification_summary(

@@ -61,7 +61,7 @@ a source-adjusted Claim Support Score (CSS):
 WIKIPEDIA_LANGUAGE    = "en"    # Wikipedia language
 WIKIPEDIA_TOP_K       = 3       # Number of top evidence passages to retrieve per claim
 WIKIPEDIA_SUMMARY_LEN = 5       # Number of sentences per Wikipedia summary
-WIKIPEDIA_USER_AGENT  = "HallucinationCorrectionBot/1.0 (research@example.com)"
+WIKIPEDIA_USER_AGENT  = "SelectiveHallucinationCorrectionBot/1.0 (https://github.com/thejas0906/AI_METRIC_ANALYSIS; hallucination-research@example.com)"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -117,8 +117,10 @@ class FrameworkConfig:
     css_supported:            float          = CSS_SUPPORTED_THRESHOLD
     css_insufficient:         float          = CSS_INSUFFICIENT_THRESHOLD
     evidence_weights:         Dict[str, float] = field(default_factory=lambda: EVIDENCE_WEIGHTS.copy())
+    wikipedia_language:       str            = WIKIPEDIA_LANGUAGE
     wikipedia_top_k:          int            = WIKIPEDIA_TOP_K
     wikipedia_summary_len:    int            = WIKIPEDIA_SUMMARY_LEN
+    wikipedia_user_agent:     str            = WIKIPEDIA_USER_AGENT
     spacy_model:              str            = SPACY_MODEL
     min_claim_length:         int            = MIN_CLAIM_LENGTH
     max_claim_length:         int            = MAX_CLAIM_LENGTH

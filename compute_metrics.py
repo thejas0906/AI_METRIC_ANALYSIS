@@ -36,6 +36,13 @@ from colorama import init, Fore, Style
 
 init(autoreset=True)
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 

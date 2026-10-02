@@ -38,6 +38,13 @@ from colorama import init, Fore, Style
 # Initialize colorama for Windows terminal colors
 init(autoreset=True)
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # ── Add project root to path ──────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -160,9 +167,9 @@ def run_demo(pipeline: HallucinationCorrectionPipeline, output_dir: str, verbose
         output_dir: Directory to save results.
         verbose:    If True, print detailed output.
     """
-    print(f"\n{Fore.CYAN}{'═' * 60}")
+    print(f"\n{Fore.CYAN}{'=' * 60}")
     print(f"  DEMO MODE: Hand-crafted LLM Response Examples")
-    print(f"{'═' * 60}{Style.RESET_ALL}\n")
+    print(f"{'=' * 60}{Style.RESET_ALL}\n")
 
     all_results = []
 
@@ -224,9 +231,9 @@ def run_dataset_evaluation(
         output_dir:   Directory to save results.
         verbose:      If True, show progress.
     """
-    print(f"\n{Fore.CYAN}{'═' * 60}")
+    print(f"\n{Fore.CYAN}{'=' * 60}")
     print(f"  DATASET EVALUATION: {dataset_name.upper()} ({max_samples} samples)")
-    print(f"{'═' * 60}{Style.RESET_ALL}\n")
+    print(f"{'=' * 60}{Style.RESET_ALL}\n")
 
     # Load dataset
     loader = DatasetLoader()
