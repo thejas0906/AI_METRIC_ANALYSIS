@@ -85,10 +85,19 @@ class ResponseReconstructor:
         """
         Assemble corrected claims into the final response.
 
+        Strategy (Minimum Necessary Correction):
+        - If original_response is provided and corrections exist, use
+          span-level surgery: locate the original claim span inside the
+          original response and replace ONLY that span with the corrected
+          text.  All other text (transitions, punctuation, structure) is
+          preserved verbatim.
+        - If original_response is not provided, fall back to joining the
+          corrected/preserved claim strings as a paragraph.
+
         Args:
             corrected_claims:  List of CorrectedClaim objects from Phase 5.
             annotate:          If True, embed correction annotations in text.
-            original_response: Original LLM response (for reference only).
+            original_response: Original LLM response for span-surgery.
 
         Returns:
             ReconstructedResponse with final text and statistics.
@@ -138,8 +147,15 @@ class ResponseReconstructor:
 
             final_parts.append(text)
 
-        # Join all parts into a coherent paragraph
-        final_text = self._join_claims(final_parts)
+        # Minimum Necessary Correction: prefer span-level surgery over claim-join
+        if original_response and any(
+            cc.status == CorrectionStatus.CORRECTED for cc in corrected_claims
+        ):
+            final_text = self._apply_span_surgery(
+                original_response, corrected_claims, annotate
+            )
+        else:
+            final_text = self._join_claims(final_parts)
 
         # Build correction report
         report = self._build_report(
@@ -171,6 +187,89 @@ class ResponseReconstructor:
     # ──────────────────────────────────────────────────────────────
     # Private Helpers
     # ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _apply_span_surgery(
+        original_response: str,
+        corrected_claims: List[CorrectedClaim],
+        annotate: bool = False,
+    ) -> str:
+        """
+        Minimum Necessary Correction: surgically replace only the claim
+        spans that were corrected, preserving all other text verbatim.
+
+        Algorithm:
+        1. Start with the full original response text.
+        2. For each CORRECTED claim (processed in reverse order to keep
+           character offsets valid after earlier substitutions), find the
+           original claim string in the current text using exact string
+           search, then simple fuzzy fallback.
+        3. Replace the matched span with the corrected text.
+        4. Claims with status PRESERVED, FLAGGED, or FAILED are left
+           untouched (the whole point of minimum-necessary correction).
+
+        This preserves paragraph structure, transitions, punctuation,
+        and the overall wording of the original LLM response.
+
+        Args:
+            original_response: The original LLM response text.
+            corrected_claims:  List of CorrectedClaim objects.
+            annotate:          If True, wrap replacements with annotation.
+
+        Returns:
+            Modified response with only hallucinated spans replaced.
+        """
+        result = original_response
+
+        # Process corrections in reverse so that earlier replacements
+        # do not shift the character positions of later ones.
+        for cc in reversed(corrected_claims):
+            if cc.status != CorrectionStatus.CORRECTED:
+                continue
+
+            original_span = cc.original_claim.strip()
+            corrected_span = cc.corrected_claim.strip()
+
+            if not original_span or original_span == corrected_span:
+                continue
+
+            replacement = corrected_span
+            if annotate:
+                replacement = f"[CORRECTED: was '{original_span}'] {corrected_span}"
+
+            # Strategy 1: exact substring match
+            if original_span in result:
+                result = result.replace(original_span, replacement, 1)
+                continue
+
+            # Strategy 2: case-insensitive match
+            lower_result = result.lower()
+            lower_span   = original_span.lower()
+            idx = lower_result.find(lower_span)
+            if idx >= 0:
+                result = result[:idx] + replacement + result[idx + len(original_span):]
+                continue
+
+            # Strategy 3: partial match on the first 60 characters of the claim
+            # (handles cases where punctuation was normalised during extraction)
+            partial = original_span[:60].strip()
+            if len(partial) > 20 and partial in result:
+                end_idx = result.find(partial) + len(partial)
+                # Extend to the end of the sentence
+                for terminator in ['. ', '? ', '! ', '
+']:
+                    t_idx = result.find(terminator, end_idx)
+                    if 0 < t_idx - end_idx < 80:
+                        end_idx = t_idx + 1
+                        break
+                result = result[:result.find(partial)] + replacement + result[end_idx:]
+                continue
+
+            # Strategy 4: fallback — append corrected text in brackets
+            # (avoid silently dropping the correction)
+            result = result + f" [{replacement}]"
+
+        return result
 
     @staticmethod
     def _join_claims(parts: List[str]) -> str:

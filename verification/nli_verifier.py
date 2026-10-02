@@ -3,33 +3,32 @@ nli_verifier.py  (Phase 4)
 ===========================
 NLI-Based Claim Verification Module
 --------------------------------------
-Uses facebook/bart-large-mnli (a zero-shot Natural Language Inference
-model) to determine whether each piece of retrieved evidence
-ENTAILS, CONTRADICTS, or is NEUTRAL to a given claim.
+Uses facebook/bart-large-mnli for genuine pairwise NLI inference.
 
-The raw entailment probability is combined with the Evidence Quality
-Score (EQS) from Phase 3 to produce the final:
+For each (evidence_passage, claim) pair the model receives them as a
+sequence-pair and outputs three class logits:
 
-    Claim Support Score (CSS) = NLI_entailment_prob × EQS
+    label 0  ->  CONTRADICTION
+    label 1  ->  NEUTRAL
+    label 2  ->  ENTAILMENT
 
-Classification:
-    CSS ≥ 0.75         →  SUPPORTED
-    0.40 ≤ CSS < 0.75  →  INSUFFICIENT_EVIDENCE
-    CSS < 0.40         →  HALLUCINATED
+Source: facebook/bart-large-mnli config.json id2label mapping.
 
-The model is loaded once and cached for the lifetime of the verifier
-to avoid reloading on every call (critical for laptop performance).
+This module does NOT use the HuggingFace zero-shot-classification
+pipeline, which treats the hypothesis as a candidate label string
+formatted into a template and therefore does not perform genuine
+sequence-pair NLI.  Instead we call AutoTokenizer +
+AutoModelForSequenceClassification directly.
 
-How BART-large-mnli works:
---------------------------
-- It is a sequence-to-sequence model fine-tuned on MNLI.
-- Input:  "{evidence} </s></s> {claim}"
-- Output: logits over 3 classes:
-            label 0 → CONTRADICTION
-            label 1 → NEUTRAL
-            label 2 → ENTAILMENT
-- We apply softmax to get probabilities.
-- We use the ENTAILMENT probability as the raw support score.
+The raw entailment logit probability is combined with the Evidence
+Quality Score (EQS) from Phase 3:
+
+    Claim Support Score (CSS) = entailment_prob * EQS
+
+Classification thresholds (from FrameworkConfig):
+    CSS >= 0.75         ->  SUPPORTED
+    0.40 <= CSS < 0.75  ->  INSUFFICIENT_EVIDENCE
+    CSS <  0.40         ->  HALLUCINATED
 
 References:
 -----------
@@ -39,11 +38,12 @@ References:
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import List, Optional
 from loguru import logger
 
 import torch
-from transformers import pipeline, Pipeline
+import torch.nn.functional as F
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 from config import FrameworkConfig
 from verification.evidence_quality import QualityAssessedRetrieval, ScoredEvidence
@@ -85,7 +85,7 @@ class ClaimVerificationResult:
     Attributes:
         claim:          The atomic factual claim being verified.
         label:          SUPPORTED / INSUFFICIENT_EVIDENCE / HALLUCINATED
-        css:            Claim Support Score (best NLI entailment × EQS)
+        css:            Claim Support Score (best NLI entailment x EQS)
         best_nli:       The NLIResult from the highest-scoring evidence.
         best_evidence:  The ScoredEvidence item that produced best CSS.
         all_nli:        NLI results for all evidence items.
@@ -93,11 +93,11 @@ class ClaimVerificationResult:
     """
     claim:          str
     label:          VerificationLabel
-    css:            float                   # final Claim Support Score
-    best_nli:       Optional[NLIResult]     = None
+    css:            float
+    best_nli:       Optional[NLIResult]      = None
     best_evidence:  Optional[ScoredEvidence] = None
-    all_nli:        List[NLIResult]          = field(default_factory=list)
-    css_breakdown:  List[float]              = field(default_factory=list)
+    all_nli:        List[NLIResult]           = field(default_factory=list)
+    css_breakdown:  List[float]               = field(default_factory=list)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -108,26 +108,42 @@ class NLIVerifier:
     """
     Verifies factual claims against evidence using BART-large-mnli.
 
+    Performs genuine pairwise NLI inference (NOT zero-shot
+    classification).  The tokenizer encodes:
+
+        premise    = evidence passage
+        hypothesis = atomic claim
+
+    as a sequence pair, and the model returns logits over 3 classes:
+        index 0 -> contradiction
+        index 1 -> neutral
+        index 2 -> entailment
+
+    Probabilities are extracted by integer index (NOT by label string
+    lookup) to guarantee correctness with the confirmed id2label:
+        {0: "contradiction", 1: "neutral", 2: "entailment"}
+
     Usage:
         verifier = NLIVerifier(config)
         result = verifier.verify(qa_result)
         print(result.label, result.css)
     """
 
-    # Class-level cache: model is loaded once and shared across instances
-    _pipeline_cache: Optional[Pipeline] = None
-    _cached_model_name: Optional[str]   = None
+    # Class-level cache: model loaded once and shared across instances
+    _tokenizer_cache:   Optional[AutoTokenizer] = None
+    _model_cache:       Optional[AutoModelForSequenceClassification] = None
+    _cached_model_name: Optional[str] = None
 
     def __init__(self, config: Optional[FrameworkConfig] = None):
         """
-        Load (or reuse) the BART-large-mnli inference pipeline.
+        Load (or reuse) the BART-large-mnli tokenizer and model.
 
         Args:
             config: FrameworkConfig instance; uses defaults if None.
         """
         self.config = config or FrameworkConfig()
-        self._load_nli_pipeline()
-        logger.info("NLIVerifier initialized.")
+        self._load_nli_model()
+        logger.info("NLIVerifier initialized (pairwise NLI mode).")
 
     # ──────────────────────────────────────────────────────────────
     # Public API
@@ -137,8 +153,8 @@ class NLIVerifier:
         """
         Verify a single claim against all of its retrieved evidence.
 
-        For each (evidence_passage, claim) pair, runs NLI and computes:
-            CSS_i = entailment_prob_i × EQS_i
+        For each (evidence_passage, claim) pair, runs pairwise NLI and computes:
+            CSS_i = entailment_prob_i * EQS_i
 
         Final CSS = max(CSS_i) over all evidence items.
 
@@ -149,11 +165,12 @@ class NLIVerifier:
             ClaimVerificationResult with label and CSS.
         """
         claim = qa_result.claim
-        logger.debug(f"Verifying claim: '{claim[:60]}'")
+        logger.debug(f"Verifying claim: {claim!r:.60}")
 
         if not qa_result.scored_evidence:
-            # No evidence retrieved → cannot support the claim
-            logger.warning(f"No evidence for claim: '{claim[:60]}' — marking INSUFFICIENT")
+            logger.warning(
+                f"No evidence for claim: {claim[:60]!r} -- marking INSUFFICIENT"
+            )
             return ClaimVerificationResult(
                 claim=claim,
                 label=VerificationLabel.INSUFFICIENT_EVIDENCE,
@@ -167,9 +184,8 @@ class NLIVerifier:
         best_ev   = None
 
         for se in qa_result.scored_evidence:
-            # Run NLI: evidence is the premise, claim is the hypothesis
+            # Run pairwise NLI: evidence is the premise, claim is the hypothesis
             nli_result = self._run_nli(premise=se.passage, hypothesis=claim)
-            # Compute CSS for this evidence item
             css_i = nli_result.entailment_prob * se.evidence_quality_score
 
             all_nli.append(nli_result)
@@ -177,6 +193,8 @@ class NLIVerifier:
 
             logger.debug(
                 f"  NLI: ent={nli_result.entailment_prob:.3f}, "
+                f"neu={nli_result.neutral_prob:.3f}, "
+                f"con={nli_result.contradiction_prob:.3f}, "
                 f"EQS={se.evidence_quality_score:.3f}, CSS={css_i:.3f}"
             )
 
@@ -185,12 +203,9 @@ class NLIVerifier:
                 best_nli  = nli_result
                 best_ev   = se
 
-        # Classify the claim based on best CSS
         label = self._classify(best_css)
 
-        logger.info(
-            f"Claim: '{claim[:50]}' → {label} (CSS={best_css:.3f})"
-        )
+        logger.info(f"Claim: '{claim[:50]}' -> {label} (CSS={best_css:.3f})")
 
         return ClaimVerificationResult(
             claim=claim,
@@ -221,48 +236,92 @@ class NLIVerifier:
         return results
 
     # ──────────────────────────────────────────────────────────────
-    # Private Helpers
+    # Private: Model Loading
     # ──────────────────────────────────────────────────────────────
 
-    def _load_nli_pipeline(self):
+    def _load_nli_model(self) -> None:
         """
-        Load the BART-large-mnli zero-shot classification pipeline.
+        Load the BART-large-mnli tokenizer and model for pairwise NLI.
 
         Uses class-level cache to avoid reloading on subsequent
-        instantiations (saves ~1.6 GB RAM load time on laptop).
+        instantiations. The id2label mapping from the model config is:
+            {0: "contradiction", 1: "neutral", 2: "entailment"}
+
+        We use integer indices -- not label name strings -- to extract
+        probabilities, ensuring correctness even if the string labels
+        in the config change between model revisions.
         """
         model_name = self.config.nli_model_name
 
         if (
-            NLIVerifier._pipeline_cache is not None
+            NLIVerifier._model_cache is not None
             and NLIVerifier._cached_model_name == model_name
         ):
-            logger.info(f"Reusing cached NLI pipeline: {model_name}")
-            self._nli_pipeline = NLIVerifier._pipeline_cache
+            logger.info(f"Reusing cached NLI model: {model_name}")
+            self._tokenizer = NLIVerifier._tokenizer_cache
+            self._model     = NLIVerifier._model_cache
+            self._device    = self._resolve_device()
             return
 
         logger.info(
             f"Loading NLI model: {model_name} "
-            f"(device={self.config.nli_device}) — this may take a minute..."
+            f"(device={self.config.nli_device}) -- this may take a minute..."
         )
 
-        self._nli_pipeline = pipeline(
-            "zero-shot-classification",
-            model=model_name,
-            device=0 if self.config.nli_device == "cuda" else -1,
+        self._tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self._model = AutoModelForSequenceClassification.from_pretrained(
+            model_name
         )
+
+        self._device = self._resolve_device()
+        self._model.to(self._device)
+        self._model.eval()
+
+        # Log the id2label at load time for reproducibility
+        id2label = self._model.config.id2label
+        logger.info(f"NLI model id2label: {id2label}")
+        # Expected: {0: "contradiction", 1: "neutral", 2: "entailment"}
+
+        # Warn if label order differs from what we assume
+        expected = {0: "contradiction", 1: "neutral", 2: "entailment"}
+        for idx, expected_label in expected.items():
+            actual = id2label.get(idx, "")
+            if actual.lower() != expected_label:
+                logger.warning(
+                    f"Unexpected id2label at index {idx}: "
+                    f"got {actual!r}, expected {expected_label!r}. "
+                    f"Full mapping: {id2label}"
+                )
 
         # Cache at class level
-        NLIVerifier._pipeline_cache  = self._nli_pipeline
+        NLIVerifier._tokenizer_cache   = self._tokenizer
+        NLIVerifier._model_cache       = self._model
         NLIVerifier._cached_model_name = model_name
-        logger.info("NLI pipeline loaded and cached.")
+        logger.info("NLI model loaded and cached.")
+
+    def _resolve_device(self) -> torch.device:
+        """Return the torch device based on config and hardware availability."""
+        if self.config.nli_device == "cuda" and torch.cuda.is_available():
+            return torch.device("cuda")
+        return torch.device("cpu")
+
+    # ──────────────────────────────────────────────────────────────
+    # Private: Pairwise NLI Inference
+    # ──────────────────────────────────────────────────────────────
 
     def _run_nli(self, premise: str, hypothesis: str) -> NLIResult:
         """
-        Run zero-shot NLI inference using BART-large-mnli.
+        Run pairwise NLI inference using BART-large-mnli.
 
-        The model is called as a zero-shot classifier with candidate
-        labels ["entailment", "neutral", "contradiction"].
+        The tokenizer encodes the sequence pair and the model returns
+        logits over 3 classes indexed as:
+            0 -> contradiction
+            1 -> neutral
+            2 -> entailment
+
+        Softmax converts logits to probabilities. Values are extracted
+        by integer index (NOT by label-name lookup).
+        id2label: {0: "contradiction", 1: "neutral", 2: "entailment"}
 
         Args:
             premise:    Evidence passage (the "fact source").
@@ -271,27 +330,40 @@ class NLIVerifier:
         Returns:
             NLIResult with probabilities for each label.
         """
-        # Truncate inputs to model's max length
-        max_len = self.config.nli_max_length
-        premise    = premise[:max_len]
-        hypothesis = hypothesis[:max_len // 4]   # claim is shorter
+        # Character-level truncation before tokenization
+        max_chars  = self.config.nli_max_length
+        premise    = premise[:max_chars]
+        hypothesis = hypothesis[:max_chars // 4]   # claims are typically shorter
 
         try:
-            # zero-shot-classification returns dict with 'labels' and 'scores'
-            output = self._nli_pipeline(
-                sequences=premise,
-                candidate_labels=["entailment", "neutral", "contradiction"],
-                hypothesis_template="This text suggests: {}.",
-                multi_label=False,
+            # Encode as a sequence pair; the tokenizer inserts the separator
+            # tokens required by BART: <s>...<\s><\s>...<\s>
+            inputs = self._tokenizer(
+                premise,
+                hypothesis,
+                return_tensors="pt",
+                truncation=True,
+                max_length=1024,
+                padding=False,
             )
+            inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
-            # Map label → score
-            label_scores = dict(zip(output["labels"], output["scores"]))
+            with torch.no_grad():
+                logits = self._model(**inputs).logits  # shape: [1, 3]
+
+            # Convert logits to probabilities via softmax
+            probs = F.softmax(logits, dim=-1).squeeze(0)  # shape: [3]
+
+            # Extract by integer index (NOT by label-name lookup)
+            # id2label: {0: "contradiction", 1: "neutral", 2: "entailment"}
+            contradiction_prob = float(probs[0].item())
+            neutral_prob       = float(probs[1].item())
+            entailment_prob    = float(probs[2].item())
 
             return NLIResult(
-                entailment_prob=label_scores.get("entailment", 0.0),
-                neutral_prob=label_scores.get("neutral", 0.0),
-                contradiction_prob=label_scores.get("contradiction", 0.0),
+                entailment_prob=entailment_prob,
+                neutral_prob=neutral_prob,
+                contradiction_prob=contradiction_prob,
                 evidence_passage=premise,
             )
 
@@ -305,14 +377,18 @@ class NLIVerifier:
                 evidence_passage=premise,
             )
 
+    # ──────────────────────────────────────────────────────────────
+    # Private: Classification
+    # ──────────────────────────────────────────────────────────────
+
     def _classify(self, css: float) -> VerificationLabel:
         """
         Map a Claim Support Score (CSS) to a VerificationLabel.
 
-        Thresholds (from FrameworkConfig):
-            CSS >= 0.75  → SUPPORTED
-            0.40 <= CSS < 0.75 → INSUFFICIENT_EVIDENCE
-            CSS < 0.40   → HALLUCINATED
+        Thresholds from FrameworkConfig:
+            CSS >= css_supported                    -> SUPPORTED
+            css_insufficient <= CSS < css_supported -> INSUFFICIENT_EVIDENCE
+            CSS <  css_insufficient                 -> HALLUCINATED
 
         Args:
             css: Claim Support Score in [0, 1].

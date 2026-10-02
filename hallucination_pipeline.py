@@ -283,12 +283,110 @@ class HallucinationCorrectionPipeline:
         qa_results: List[QualityAssessedRetrieval],
     ) -> tuple:
         """
-        Phase 7: Re-verify all corrected claims with NLI.
+        Phase 7: Re-verify all corrected claims with FRESH evidence retrieval.
 
-        For each CORRECTED claim:
-        - Build a temporary QualityAssessedRetrieval with the corrected text
-        - Run NLI verification on it
-        - If CSS ≥ 0.75: accept correction
+        For each CORRECTED claim, this phase performs independent
+        verification using FRESHLY retrieved evidence -- NOT the stale
+        evidence from Phase 1.  This is critical to the research
+        methodology: if correction introduced new factual content, the
+        original evidence may not cover it.
+
+        Steps per corrected claim:
+        1. Run fresh Wikipedia retrieval for the corrected claim text.
+        2. Re-assess evidence quality (Phase 3 logic).
+        3. Run pairwise NLI verification (Phase 4 logic).
+        4. Accept if CSS >= css_supported threshold.
+        5. Retry once if CSS is below threshold and iterations permit.
+        6. Revert to original on exhausted retries.
+
+        Preserved and flagged claims are not re-verified.
+
+        Args:
+            corrected_claims: List of CorrectedClaim from Phase 5.
+            qa_results:       Corresponding quality-assessed evidence
+                              (Phase 1 evidence; kept for retry fallback).
+
+        Returns:
+            Tuple of (final_verification_results, updated_corrected_claims)
+        """
+        from verification.evidence_quality import QualityAssessedRetrieval as QAR
+
+        final_verifications: List[ClaimVerificationResult] = []
+        updated_corrected: List[CorrectedClaim] = list(corrected_claims)
+
+        for i, cc in enumerate(corrected_claims):
+            if cc.status != CorrectionStatus.CORRECTED:
+                # Non-corrected claims do not need re-verification.
+                placeholder = ClaimVerificationResult(
+                    claim=cc.corrected_claim,
+                    label=(
+                        VerificationLabel.SUPPORTED
+                        if cc.status == CorrectionStatus.PRESERVED
+                        else VerificationLabel.INSUFFICIENT_EVIDENCE
+                    ),
+                    css=1.0 if cc.status == CorrectionStatus.PRESERVED else 0.0,
+                )
+                final_verifications.append(placeholder)
+                continue
+
+            # Phase 7: Fresh retrieval for the corrected claim
+            logger.info(
+                f"Phase 7: Fresh retrieval for corrected claim "
+                f"[{i+1}/{len(corrected_claims)}]: '{cc.corrected_claim[:60]}'"
+            )
+
+            try:
+                fresh_retrieval = self.evidence_retriever.retrieve(cc.corrected_claim)
+                fresh_qa = self.quality_assessor.assess(fresh_retrieval)
+            except Exception as e:
+                # If fresh retrieval fails, fall back to Phase 1 evidence
+                logger.warning(
+                    f"Phase 7: Fresh retrieval failed ({e}). "
+                    f"Falling back to Phase 1 evidence."
+                )
+                fresh_qa = QAR(
+                    claim=cc.corrected_claim,
+                    scored_evidence=qa_results[i].scored_evidence,
+                    best_eqs=qa_results[i].best_eqs,
+                )
+
+            re_verification = self.nli_verifier.verify(fresh_qa)
+            final_verifications.append(re_verification)
+
+            if re_verification.css >= self.config.css_supported:
+                # Correction accepted
+                logger.info(
+                    f"Phase 7: Correction ACCEPTED "
+                    f"(CSS={re_verification.css:.3f}): '{cc.corrected_claim[:60]}'"
+                )
+
+            elif cc.correction_iterations < self.config.max_correction_iterations:
+                # Retry correction once more using fresh evidence
+                logger.info(
+                    f"Phase 7: CSS too low ({re_verification.css:.3f}), "
+                    f"retrying correction with fresh evidence..."
+                )
+                retry = self.claim_corrector.correct(
+                    re_verification, fresh_qa
+                )
+                retry.correction_iterations = cc.correction_iterations + 1
+                updated_corrected[i] = retry
+
+            else:
+                # Max iterations reached -- revert to original
+                logger.warning(
+                    f"Phase 7: Correction FAILED after "
+                    f"{cc.correction_iterations} attempts. "
+                    f"Reverting to original: '{cc.original_claim[:60]}'"
+                )
+                from correction.claim_corrector import CorrectionStatus as CS
+                updated_corrected[i].status = CS.FAILED
+                updated_corrected[i].corrected_claim = cc.original_claim
+
+        logger.info("Phase 7 complete: independent verification with fresh evidence done.")
+        return final_verifications, updated_corrected
+
+ ≥ 0.75: accept correction
         - If CSS < 0.75 and iterations < MAX_CORRECTION_ITERATIONS:
           try one more correction
 
