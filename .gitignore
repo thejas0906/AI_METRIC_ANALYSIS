@@ -1,0 +1,88 @@
+# ============================================================
+# .gitignore — Selective Evidence-Guided Hallucination
+#              Correction Framework
+# ============================================================
+
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual Environments ──────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+ENV/
+env.bak/
+venv.bak/
+
+# ── Environment Variables (contains API keys) ─────────────────
+.env
+# .env.example is intentionally tracked (no real secrets)
+
+# ── Experiment Results (generated at runtime) ─────────────────
+results/*.json
+results/*.csv
+results/*.png
+results/*.pdf
+# Keep the folder itself tracked
+!results/.gitkeep
+
+# ── Logs (generated at runtime) ───────────────────────────────
+logs/
+*.log
+
+# ── HuggingFace / Torch Model Cache ──────────────────────────
+# These are downloaded automatically and can be very large (>1 GB)
+.cache/
+models/
+*.bin
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+
+# ── Jupyter Notebooks ─────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── pytest / Testing ──────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+
+# ── Build / Distribution ──────────────────────────────────────
+build/
+dist/
+*.egg-info/
+*.egg
+MANIFEST
+wheels/
+
+# ── IDE / Editor ──────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Windows ───────────────────────────────────────────────────
+desktop.ini
+ehthumbs.db
+
+# ── spaCy downloaded models ───────────────────────────────────
+# These are installed into site-packages, not the project dir.
+# Nothing to ignore here, but keeping comment for clarity.
+
+# ── Data (large raw datasets — keep custom_claims.csv tracked) ─
+# Uncomment if you start downloading FEVER/TruthfulQA locally:
+# data/fever/
+# data/truthfulqa/
