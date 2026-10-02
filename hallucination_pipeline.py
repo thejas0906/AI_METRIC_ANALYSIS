@@ -8,38 +8,41 @@ Correction Framework into a single, end-to-end pipeline.
 
 Full Pipeline:
   User Query
-      ↓
+      |
   [Phase 0] LLM Response (provided as input)
-      ↓
-  [Phase 1] Claim Extraction       (ClaimExtractor)
-      ↓
+      |
+  [Phase 1] Claim Extraction       (ClaimExtractor -> List[ClaimSpan])
+      |
   [Phase 2] Evidence Retrieval     (EvidenceRetriever)
-      ↓
+      |
   [Phase 3] Quality Assessment     (EvidenceQualityAssessor)
-      ↓
+      |
   [Phase 4] NLI Verification       (NLIVerifier)
-      ↓
+      |
   [Phase 5] Selective Correction   (ClaimCorrector)
-      ↓
-  [Phase 6] Response Reconstruction (ResponseReconstructor)
-      ↓
-  [Phase 7] Independent Verification (NLIVerifier, again)
-      ↓
+      |
+  [Phase 6] Response Reconstruction (ResponseReconstructor -- span surgery)
+      |
+  [Phase 7] Independent Verification (fresh retrieval + NLI)
+      |
   Final Verified Response
 
+Central research contribution:
+    MINIMUM NECESSARY CORRECTION -- only contradicted claim spans are
+    replaced; supported text is preserved byte-for-byte.
+
 Phase 7 (Independent Verification):
-    After correction, each modified claim is re-verified by the NLI
-    verifier. If CSS ≥ 0.75, the correction is accepted. If not, one
-    more correction attempt is made (up to MAX_CORRECTION_ITERATIONS).
+    After correction, each CORRECTED claim is re-verified with FRESHLY
+    retrieved evidence.  The original Phase-1 evidence is NOT reused
+    because the corrected claim may reference different facts.
+    If fresh retrieval fails, the claim is marked
+    FINAL_VERIFICATION_FAILED rather than silently falling back.
 
 Design Decisions:
 -----------------
-- The pipeline is implemented as a class with a single `.run()` method
-  for clean integration into experiment scripts.
-- All intermediate results are stored in `PipelineResult` for
-  full transparency and debugging.
-- Component initialization is done once in __init__ for efficiency;
-  the expensive NLI model is loaded only once.
+- The pipeline is implemented as a class with a single `.run()` method.
+- All intermediate results are stored in `PipelineResult`.
+- Component initialization is done once in __init__ for efficiency.
 - Logging is verbose by default to aid research reproducibility.
 """
 
@@ -49,7 +52,7 @@ from loguru import logger
 from tqdm import tqdm
 
 from config import FrameworkConfig
-from retrieval.claim_extractor import ClaimExtractor
+from retrieval.claim_extractor import ClaimExtractor, ClaimSpan
 from retrieval.evidence_retriever import EvidenceRetriever, RetrievalResult
 from verification.evidence_quality import EvidenceQualityAssessor, QualityAssessedRetrieval
 from verification.nli_verifier import NLIVerifier, ClaimVerificationResult, VerificationLabel
@@ -58,9 +61,9 @@ from correction.response_reconstructor import ResponseReconstructor, Reconstruct
 from evaluation.metrics import EvaluationMetrics, CorrectionOutcome
 
 
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
 # Pipeline Result Data Structure
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
 
 @dataclass
 class PipelineResult:
@@ -70,7 +73,8 @@ class PipelineResult:
 
     Attributes:
         original_response:       The raw LLM output.
-        extracted_claims:        Atomic claims from Phase 1.
+        claim_spans:             Span-aware claim objects from Phase 1.
+        extracted_claims:        Plain claim strings (for backward compat).
         retrieval_results:       Evidence per claim from Phase 2.
         quality_results:         Scored evidence from Phase 3.
         verification_results:    Initial NLI results from Phase 4.
@@ -81,20 +85,21 @@ class PipelineResult:
         pipeline_metadata:       Timing, stats, and configuration info.
     """
     original_response:       str
-    extracted_claims:        List[str]                       = field(default_factory=list)
-    retrieval_results:       List[RetrievalResult]           = field(default_factory=list)
-    quality_results:         List[QualityAssessedRetrieval]  = field(default_factory=list)
-    verification_results:    List[ClaimVerificationResult]   = field(default_factory=list)
-    corrected_claims:        List[CorrectedClaim]            = field(default_factory=list)
+    claim_spans:             List[ClaimSpan]                = field(default_factory=list)
+    extracted_claims:        List[str]                      = field(default_factory=list)
+    retrieval_results:       List[RetrievalResult]          = field(default_factory=list)
+    quality_results:         List[QualityAssessedRetrieval] = field(default_factory=list)
+    verification_results:    List[ClaimVerificationResult]  = field(default_factory=list)
+    corrected_claims:        List[CorrectedClaim]           = field(default_factory=list)
     reconstructed_response:  Optional[ReconstructedResponse] = None
-    final_verification:      List[ClaimVerificationResult]   = field(default_factory=list)
-    final_response:          str                             = ""
-    pipeline_metadata:       Dict[str, Any]                  = field(default_factory=dict)
+    final_verification:      List[ClaimVerificationResult]  = field(default_factory=list)
+    final_response:          str                            = ""
+    pipeline_metadata:       Dict[str, Any]                 = field(default_factory=dict)
 
 
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
 # Main Pipeline Class
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
 
 class HallucinationCorrectionPipeline:
     """
@@ -124,7 +129,7 @@ class HallucinationCorrectionPipeline:
         logger.info("  Initializing Hallucination Correction Pipeline")
         logger.info("=" * 55)
 
-        # Phase 1: Claim Extraction
+        # Phase 1: Claim Extraction (returns ClaimSpan objects)
         self.claim_extractor = ClaimExtractor(self.config)
 
         # Phase 2: Evidence Retrieval
@@ -133,7 +138,7 @@ class HallucinationCorrectionPipeline:
         # Phase 3: Evidence Quality Assessment
         self.quality_assessor = EvidenceQualityAssessor(self.config)
 
-        # Phase 4 & 7: NLI Verification (shared instance → shared model cache)
+        # Phase 4 & 7: NLI Verification (shared instance -> shared model cache)
         self.nli_verifier = NLIVerifier(self.config)
 
         # Phase 5: Selective Claim Correction
@@ -144,9 +149,9 @@ class HallucinationCorrectionPipeline:
 
         logger.info("Pipeline initialized. Ready to process responses.")
 
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # Public API
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def run(
         self,
@@ -179,27 +184,30 @@ class HallucinationCorrectionPipeline:
         if verbose:
             self._print_phase("PHASE 1: CLAIM EXTRACTION")
 
-        # ── Phase 1: Claim Extraction ────────────────────────────
-        result.extracted_claims = self.claim_extractor.extract(llm_response)
+        # -- Phase 1: Claim Extraction (span-aware) -------------------
+        result.claim_spans = self.claim_extractor.extract_spans(llm_response)
+        result.extracted_claims = [cs.text for cs in result.claim_spans]
         logger.info(f"Phase 1 complete: {len(result.extracted_claims)} claims extracted.")
 
         if not result.extracted_claims:
-            logger.warning("No claims extracted — returning original response.")
+            logger.warning("No claims extracted -- returning original response.")
             result.final_response = llm_response
             return result
 
-        # ── Phase 2: Evidence Retrieval ──────────────────────────
+        # -- Phase 2: Evidence Retrieval ------------------------------
         if verbose:
             self._print_phase("PHASE 2: EVIDENCE RETRIEVAL")
 
         result.retrieval_results = []
-        for claim in tqdm(result.extracted_claims, desc="Retrieving evidence", disable=not verbose):
-            rr = self.evidence_retriever.retrieve(claim)
+        for claim_text in tqdm(
+            result.extracted_claims, desc="Retrieving evidence", disable=not verbose
+        ):
+            rr = self.evidence_retriever.retrieve(claim_text)
             result.retrieval_results.append(rr)
 
         logger.info("Phase 2 complete: evidence retrieved for all claims.")
 
-        # ── Phase 3: Evidence Quality Assessment ─────────────────
+        # -- Phase 3: Evidence Quality Assessment ---------------------
         if verbose:
             self._print_phase("PHASE 3: EVIDENCE QUALITY ASSESSMENT")
 
@@ -208,7 +216,7 @@ class HallucinationCorrectionPipeline:
         )
         logger.info("Phase 3 complete: evidence quality scores computed.")
 
-        # ── Phase 4: NLI Verification ─────────────────────────
+        # -- Phase 4: NLI Verification --------------------------------
         if verbose:
             self._print_phase("PHASE 4: NLI VERIFICATION")
 
@@ -217,11 +225,10 @@ class HallucinationCorrectionPipeline:
         )
         logger.info("Phase 4 complete: claims classified by NLI.")
 
-        # Print Phase 4 summary
         if verbose:
             self._print_verification_summary(result.verification_results)
 
-        # ── Phase 5: Selective Correction ─────────────────────────
+        # -- Phase 5: Selective Correction ----------------------------
         if verbose:
             self._print_phase("PHASE 5: SELECTIVE CLAIM CORRECTION")
 
@@ -231,20 +238,21 @@ class HallucinationCorrectionPipeline:
         )
         logger.info("Phase 5 complete: hallucinated claims corrected.")
 
-        # ── Phase 6: Response Reconstruction ──────────────────────
+        # -- Phase 6: Response Reconstruction (span surgery) ----------
         if verbose:
             self._print_phase("PHASE 6: RESPONSE RECONSTRUCTION")
 
         result.reconstructed_response = self.reconstructor.reconstruct(
-            result.corrected_claims,
+            corrected_claims=result.corrected_claims,
+            claim_spans=result.claim_spans,
             annotate=False,
             original_response=llm_response,
         )
-        logger.info("Phase 6 complete: response reconstructed.")
+        logger.info("Phase 6 complete: response reconstructed via span surgery.")
 
-        # ── Phase 7: Independent Verification ─────────────────────
+        # -- Phase 7: Independent Verification (fresh retrieval) ------
         if verbose:
-            self._print_phase("PHASE 7: INDEPENDENT VERIFICATION")
+            self._print_phase("PHASE 7: INDEPENDENT VERIFICATION (FRESH)")
 
         result.final_verification, result.corrected_claims = (
             self._independent_verification(
@@ -255,8 +263,10 @@ class HallucinationCorrectionPipeline:
 
         # Rebuild final response after Phase 7 adjustments
         final_reconstructed = self.reconstructor.reconstruct(
-            result.corrected_claims,
+            corrected_claims=result.corrected_claims,
+            claim_spans=result.claim_spans,
             annotate=False,
+            original_response=llm_response,
         )
         result.final_response = final_reconstructed.final_text
 
@@ -273,9 +283,9 @@ class HallucinationCorrectionPipeline:
 
         return result
 
-    # ──────────────────────────────────────────────────────────────
-    # Phase 7: Independent Verification
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Phase 7: Independent Verification (EXACTLY ONE DEFINITION)
+    # ------------------------------------------------------------------
 
     def _independent_verification(
         self,
@@ -283,28 +293,31 @@ class HallucinationCorrectionPipeline:
         qa_results: List[QualityAssessedRetrieval],
     ) -> tuple:
         """
-        Phase 7: Re-verify all corrected claims with FRESH evidence retrieval.
+        Phase 7: Re-verify CORRECTED claims with FRESH evidence retrieval.
 
-        For each CORRECTED claim, this phase performs independent
-        verification using FRESHLY retrieved evidence -- NOT the stale
-        evidence from Phase 1.  This is critical to the research
-        methodology: if correction introduced new factual content, the
-        original evidence may not cover it.
+        This is the only definition of _independent_verification in this
+        class.  The method performs genuinely independent verification:
 
-        Steps per corrected claim:
-        1. Run fresh Wikipedia retrieval for the corrected claim text.
-        2. Re-assess evidence quality (Phase 3 logic).
-        3. Run pairwise NLI verification (Phase 4 logic).
-        4. Accept if CSS >= css_supported threshold.
-        5. Retry once if CSS is below threshold and iterations permit.
-        6. Revert to original on exhausted retries.
+        1. For each CORRECTED claim, fresh evidence is retrieved from
+           Wikipedia using the corrected claim text as the query.
+        2. Evidence quality is re-assessed on the fresh evidence.
+        3. Pairwise NLI is run on the corrected claim vs fresh evidence.
+        4. If CSS >= css_supported: correction is accepted.
+        5. If CSS < css_supported and iterations remain: retry correction.
+        6. If max iterations exhausted: revert to original claim.
 
-        Preserved and flagged claims are not re-verified.
+        When fresh retrieval fails (network error, rate limit, etc.), the
+        claim is marked with status FINAL_VERIFICATION_FAILED and the
+        original claim text is preserved.  This failure is NOT silently
+        treated as a successful verification.
+
+        Preserved and flagged claims are NOT re-verified (they already
+        passed or were never corrected).
 
         Args:
             corrected_claims: List of CorrectedClaim from Phase 5.
-            qa_results:       Corresponding quality-assessed evidence
-                              (Phase 1 evidence; kept for retry fallback).
+            qa_results:       Phase-1 quality-assessed evidence (kept for
+                              retry context only; NOT used for verification).
 
         Returns:
             Tuple of (final_verification_results, updated_corrected_claims)
@@ -316,52 +329,63 @@ class HallucinationCorrectionPipeline:
 
         for i, cc in enumerate(corrected_claims):
             if cc.status != CorrectionStatus.CORRECTED:
-                # Non-corrected claims do not need re-verification.
+                # Preserved and flagged claims skip re-verification.
                 placeholder = ClaimVerificationResult(
                     claim=cc.corrected_claim,
                     label=(
                         VerificationLabel.SUPPORTED
                         if cc.status == CorrectionStatus.PRESERVED
-                        else VerificationLabel.INSUFFICIENT_EVIDENCE
+                        else VerificationLabel.UNVERIFIABLE
                     ),
                     css=1.0 if cc.status == CorrectionStatus.PRESERVED else 0.0,
                 )
                 final_verifications.append(placeholder)
                 continue
 
-            # Phase 7: Fresh retrieval for the corrected claim
+            # Phase 7: Fresh retrieval for the corrected claim text
             logger.info(
-                f"Phase 7: Fresh retrieval for corrected claim "
+                f"Phase 7: Fresh retrieval for claim "
                 f"[{i+1}/{len(corrected_claims)}]: '{cc.corrected_claim[:60]}'"
             )
 
+            fresh_retrieval_succeeded = False
             try:
                 fresh_retrieval = self.evidence_retriever.retrieve(cc.corrected_claim)
                 fresh_qa = self.quality_assessor.assess(fresh_retrieval)
+                fresh_retrieval_succeeded = bool(fresh_qa.scored_evidence)
             except Exception as e:
-                # If fresh retrieval fails, fall back to Phase 1 evidence
                 logger.warning(
-                    f"Phase 7: Fresh retrieval failed ({e}). "
-                    f"Falling back to Phase 1 evidence."
+                    f"Phase 7: Fresh retrieval FAILED ({e}). "
+                    f"Marking as FINAL_VERIFICATION_FAILED."
                 )
-                fresh_qa = QAR(
+
+            if not fresh_retrieval_succeeded:
+                # Do NOT silently fall back to stale evidence.
+                # Mark as failed and preserve the corrected text as-is.
+                from correction.claim_corrector import CorrectionStatus as CS
+                updated_corrected[i].status = CS.FINAL_VERIFICATION_FAILED
+                placeholder = ClaimVerificationResult(
                     claim=cc.corrected_claim,
-                    scored_evidence=qa_results[i].scored_evidence,
-                    best_eqs=qa_results[i].best_eqs,
+                    label=VerificationLabel.UNVERIFIABLE,
+                    css=0.0,
                 )
+                final_verifications.append(placeholder)
+                logger.warning(
+                    f"Phase 7: FINAL_VERIFICATION_FAILED for "
+                    f"'{cc.corrected_claim[:60]}'"
+                )
+                continue
 
             re_verification = self.nli_verifier.verify(fresh_qa)
             final_verifications.append(re_verification)
 
             if re_verification.css >= self.config.css_supported:
-                # Correction accepted
                 logger.info(
                     f"Phase 7: Correction ACCEPTED "
                     f"(CSS={re_verification.css:.3f}): '{cc.corrected_claim[:60]}'"
                 )
 
             elif cc.correction_iterations < self.config.max_correction_iterations:
-                # Retry correction once more using fresh evidence
                 logger.info(
                     f"Phase 7: CSS too low ({re_verification.css:.3f}), "
                     f"retrying correction with fresh evidence..."
@@ -373,7 +397,7 @@ class HallucinationCorrectionPipeline:
                 updated_corrected[i] = retry
 
             else:
-                # Max iterations reached -- revert to original
+                # Max iterations reached -- revert to original claim
                 logger.warning(
                     f"Phase 7: Correction FAILED after "
                     f"{cc.correction_iterations} attempts. "
@@ -383,89 +407,12 @@ class HallucinationCorrectionPipeline:
                 updated_corrected[i].status = CS.FAILED
                 updated_corrected[i].corrected_claim = cc.original_claim
 
-        logger.info("Phase 7 complete: independent verification with fresh evidence done.")
+        logger.info("Phase 7 complete: independent fresh-evidence verification done.")
         return final_verifications, updated_corrected
 
- ≥ 0.75: accept correction
-        - If CSS < 0.75 and iterations < MAX_CORRECTION_ITERATIONS:
-          try one more correction
-
-        Preserved claims are not re-verified (they were already supported).
-
-        Args:
-            corrected_claims: List of CorrectedClaim from Phase 5.
-            qa_results:       Corresponding quality-assessed evidence.
-
-        Returns:
-            Tuple of (final_verification_results, updated_corrected_claims)
-        """
-        final_verifications: List[ClaimVerificationResult] = []
-        updated_corrected: List[CorrectedClaim] = list(corrected_claims)
-
-        for i, cc in enumerate(corrected_claims):
-            if cc.status != CorrectionStatus.CORRECTED:
-                # Non-corrected claims don't need re-verification
-                # Create a placeholder result for tracking
-                placeholder = ClaimVerificationResult(
-                    claim=cc.corrected_claim,
-                    label=VerificationLabel.SUPPORTED
-                    if cc.status == CorrectionStatus.PRESERVED
-                    else VerificationLabel.INSUFFICIENT_EVIDENCE,
-                    css=1.0 if cc.status == CorrectionStatus.PRESERVED else 0.0,
-                )
-                final_verifications.append(placeholder)
-                continue
-
-            # ── Re-verify the corrected claim ─────────────────────
-            qa = qa_results[i]
-
-            # Create a temporary QA result with the corrected claim text
-            from verification.evidence_quality import QualityAssessedRetrieval as QAR
-            temp_qa = QAR(
-                claim=cc.corrected_claim,     # use the corrected text
-                scored_evidence=qa.scored_evidence,
-                best_eqs=qa.best_eqs,
-            )
-
-            re_verification = self.nli_verifier.verify(temp_qa)
-            final_verifications.append(re_verification)
-
-            if re_verification.css >= self.config.css_supported:
-                # ✅ Correction accepted — update the verification result
-                logger.info(
-                    f"Phase 7: Correction ACCEPTED "
-                    f"(CSS={re_verification.css:.3f}): '{cc.corrected_claim[:60]}'"
-                )
-
-            elif cc.correction_iterations < self.config.max_correction_iterations:
-                # 🔄 Retry correction once more
-                logger.info(
-                    f"Phase 7: CSS too low ({re_verification.css:.3f}), "
-                    f"retrying correction..."
-                )
-                retry = self.claim_corrector.correct(
-                    re_verification, qa
-                )
-                retry.correction_iterations = cc.correction_iterations + 1
-                updated_corrected[i] = retry
-
-            else:
-                # ❌ Max iterations reached — revert to original
-                logger.warning(
-                    f"Phase 7: Correction FAILED after "
-                    f"{cc.correction_iterations} attempts. "
-                    f"Reverting to original: '{cc.original_claim[:60]}'"
-                )
-                from correction.claim_corrector import CorrectionStatus as CS
-                updated_corrected[i].status = CS.FAILED
-                updated_corrected[i].corrected_claim = cc.original_claim
-
-        logger.info("Phase 7 complete: independent verification done.")
-        return final_verifications, updated_corrected
-
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # Batch Evaluation Mode
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def evaluate(
         self,
@@ -476,9 +423,10 @@ class HallucinationCorrectionPipeline:
         Run the pipeline on a list of DatasetSample objects and
         compute evaluation metrics.
 
-        This method is designed for use with evaluation datasets
-        (FEVER, TruthfulQA, custom) where ground-truth labels are
-        available.
+        The primary unit of evaluation is a full LLM response
+        (which may contain multiple factual claims), not a single claim.
+        When samples contain single claims (e.g., FEVER-style), the
+        claim is treated as a single-sentence LLM response.
 
         Args:
             samples:  List of DatasetSample objects from DatasetLoader.
@@ -494,15 +442,12 @@ class HallucinationCorrectionPipeline:
         correction_outcomes = []
 
         for sample in tqdm(samples, desc="Evaluating", disable=not verbose):
-            # Run pipeline on the claim text directly
-            # (In real use, this would be an LLM response; here we use the claim)
-            result = self.run(sample.claim, verbose=False)
+            result = self.run(sample.claim, query=sample.context, verbose=False)
 
-            # Determine if the framework detected this as hallucinated
             if result.verification_results:
                 primary_vr = result.verification_results[0]
                 predicted_hallucinated = (
-                    primary_vr.label == VerificationLabel.HALLUCINATED
+                    primary_vr.label == VerificationLabel.CONTRADICTED
                 )
                 was_corrected = (
                     result.corrected_claims and
@@ -534,29 +479,28 @@ class HallucinationCorrectionPipeline:
             )
             correction_outcomes.append(outcome)
             pipeline_outputs.append({
-                "claim": sample.claim,
-                "ground_truth": sample.ground_truth,
-                "predicted": predicted_hallucinated,
-                "was_corrected": was_corrected,
+                "claim":                    sample.claim,
+                "ground_truth":             sample.ground_truth,
+                "predicted":                predicted_hallucinated,
+                "was_corrected":            was_corrected,
                 "post_correction_verified": post_verified,
-                "was_preserved": was_preserved,
-                "final_response": result.final_response,
+                "was_preserved":            was_preserved,
+                "final_response":           result.final_response,
             })
 
-        # Compute metrics
         metrics_calculator = EvaluationMetrics()
         ground_truth = [o.ground_truth_label for o in correction_outcomes]
         predictions  = [o.predicted_label    for o in correction_outcomes]
         metrics = metrics_calculator.compute(ground_truth, predictions, correction_outcomes)
 
         return {
-            "metrics": metrics,
+            "metrics":          metrics,
             "pipeline_outputs": pipeline_outputs,
         }
 
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # Display Helpers
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _print_phase(title: str) -> None:
@@ -571,15 +515,15 @@ class HallucinationCorrectionPipeline:
     ) -> None:
         """Print a summary of Phase 4 verification results."""
         labels = [vr.label.value for vr in verification_results]
-        supported   = labels.count("SUPPORTED")
-        insufficient = labels.count("INSUFFICIENT_EVIDENCE")
-        hallucinated = labels.count("HALLUCINATED")
+        supported    = labels.count("SUPPORTED")
+        unverifiable = labels.count("UNVERIFIABLE")
+        contradicted = labels.count("CONTRADICTED")
         total = len(labels)
 
         print(f"\n  Verification Summary ({total} claims):")
-        print(f"  ✅ Supported:              {supported}")
-        print(f"  ⚠️  Insufficient Evidence:  {insufficient}")
-        print(f"  ❌ Hallucinated:           {hallucinated}")
+        print(f"  SUPPORTED:    {supported}")
+        print(f"  UNVERIFIABLE: {unverifiable}")
+        print(f"  CONTRADICTED: {contradicted}")
 
     @staticmethod
     def _print_final_summary(result: PipelineResult) -> None:

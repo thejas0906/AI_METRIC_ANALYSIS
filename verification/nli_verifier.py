@@ -16,19 +16,25 @@ Source: facebook/bart-large-mnli config.json id2label mapping.
 
 This module does NOT use the HuggingFace zero-shot-classification
 pipeline, which treats the hypothesis as a candidate label string
-formatted into a template and therefore does not perform genuine
+formatted into a template and therefore does NOT perform genuine
 sequence-pair NLI.  Instead we call AutoTokenizer +
-AutoModelForSequenceClassification directly.
+AutoModelForSequenceClassification directly, so the model receives:
 
-The raw entailment logit probability is combined with the Evidence
-Quality Score (EQS) from Phase 3:
+    tokenizer(premise, hypothesis, truncation=True, ...)
 
-    Claim Support Score (CSS) = entailment_prob * EQS
+Verification labels:
+    SUPPORTED     -- CSS >= css_supported:    evidence entails claim
+    CONTRADICTED  -- contradiction_prob dominates AND evidence is strong
+    UNVERIFIABLE  -- insufficient or neutral evidence; do NOT correct
+
+CSS = entailment_prob * EQS  (Claim Support Score)
 
 Classification thresholds (from FrameworkConfig):
     CSS >= 0.75         ->  SUPPORTED
-    0.40 <= CSS < 0.75  ->  INSUFFICIENT_EVIDENCE
-    CSS <  0.40         ->  HALLUCINATED
+    0.40 <= CSS < 0.75  ->  UNVERIFIABLE
+    CSS <  0.40         ->  further analysis: check contradiction_prob
+        contradiction_prob > 0.5  ->  CONTRADICTED
+        else                      ->  UNVERIFIABLE
 
 References:
 -----------
@@ -49,15 +55,32 @@ from config import FrameworkConfig
 from verification.evidence_quality import QualityAssessedRetrieval, ScoredEvidence
 
 
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
 # Enums & Data Structures
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
 
 class VerificationLabel(str, Enum):
-    """Possible outcomes of NLI-based claim verification."""
+    """
+    Possible outcomes of NLI-based claim verification.
+
+    SUPPORTED:    Evidence strongly entails the claim.
+    CONTRADICTED: Evidence contradicts the claim (hallucinated/wrong).
+    UNVERIFIABLE: Evidence is insufficient to confirm or deny.
+
+    The distinction between CONTRADICTED and UNVERIFIABLE is critical:
+    a claim should only be CORRECTED when evidence actively contradicts
+    it, not merely when retrieval is weak.
+
+    Backward compat aliases:
+        HALLUCINATED          = CONTRADICTED
+        INSUFFICIENT_EVIDENCE = UNVERIFIABLE
+    """
     SUPPORTED             = "SUPPORTED"
-    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
-    HALLUCINATED          = "HALLUCINATED"
+    CONTRADICTED          = "CONTRADICTED"
+    UNVERIFIABLE          = "UNVERIFIABLE"
+    # Backward compat aliases (same string value, used in old code)
+    HALLUCINATED          = "CONTRADICTED"
+    INSUFFICIENT_EVIDENCE = "UNVERIFIABLE"
 
 
 @dataclass
@@ -84,7 +107,7 @@ class ClaimVerificationResult:
 
     Attributes:
         claim:          The atomic factual claim being verified.
-        label:          SUPPORTED / INSUFFICIENT_EVIDENCE / HALLUCINATED
+        label:          SUPPORTED / CONTRADICTED / UNVERIFIABLE
         css:            Claim Support Score (best NLI entailment x EQS)
         best_nli:       The NLIResult from the highest-scoring evidence.
         best_evidence:  The ScoredEvidence item that produced best CSS.
@@ -100,27 +123,27 @@ class ClaimVerificationResult:
     css_breakdown:  List[float]               = field(default_factory=list)
 
 
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
 # NLI Verifier
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
 
 class NLIVerifier:
     """
     Verifies factual claims against evidence using BART-large-mnli.
 
-    Performs genuine pairwise NLI inference (NOT zero-shot
-    classification).  The tokenizer encodes:
+    Performs genuine pairwise NLI inference (NOT zero-shot classification).
+    The tokenizer encodes:
 
         premise    = evidence passage
         hypothesis = atomic claim
 
-    as a sequence pair, and the model returns logits over 3 classes:
+    as a sequence pair.  The model returns logits over 3 classes:
         index 0 -> contradiction
         index 1 -> neutral
         index 2 -> entailment
 
-    Probabilities are extracted by integer index (NOT by label string
-    lookup) to guarantee correctness with the confirmed id2label:
+    Probabilities are extracted by integer index -- NOT by label string
+    lookup -- to guarantee correctness with the confirmed id2label:
         {0: "contradiction", 1: "neutral", 2: "entailment"}
 
     Usage:
@@ -135,19 +158,13 @@ class NLIVerifier:
     _cached_model_name: Optional[str] = None
 
     def __init__(self, config: Optional[FrameworkConfig] = None):
-        """
-        Load (or reuse) the BART-large-mnli tokenizer and model.
-
-        Args:
-            config: FrameworkConfig instance; uses defaults if None.
-        """
         self.config = config or FrameworkConfig()
         self._load_nli_model()
         logger.info("NLIVerifier initialized (pairwise NLI mode).")
 
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # Public API
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def verify(self, qa_result: QualityAssessedRetrieval) -> ClaimVerificationResult:
         """
@@ -157,6 +174,8 @@ class NLIVerifier:
             CSS_i = entailment_prob_i * EQS_i
 
         Final CSS = max(CSS_i) over all evidence items.
+        Label assigned using _classify() which distinguishes
+        SUPPORTED / CONTRADICTED / UNVERIFIABLE.
 
         Args:
             qa_result: QualityAssessedRetrieval from Phase 3.
@@ -165,15 +184,15 @@ class NLIVerifier:
             ClaimVerificationResult with label and CSS.
         """
         claim = qa_result.claim
-        logger.debug(f"Verifying claim: {claim!r:.60}")
+        logger.debug(f"Verifying claim: '{claim[:60]}'")
 
         if not qa_result.scored_evidence:
             logger.warning(
-                f"No evidence for claim: {claim[:60]!r} -- marking INSUFFICIENT"
+                f"No evidence for claim: '{claim[:60]}' -- marking UNVERIFIABLE"
             )
             return ClaimVerificationResult(
                 claim=claim,
-                label=VerificationLabel.INSUFFICIENT_EVIDENCE,
+                label=VerificationLabel.UNVERIFIABLE,
                 css=0.0,
             )
 
@@ -182,9 +201,9 @@ class NLIVerifier:
         best_css  = 0.0
         best_nli  = None
         best_ev   = None
+        max_contradiction = 0.0
 
         for se in qa_result.scored_evidence:
-            # Run pairwise NLI: evidence is the premise, claim is the hypothesis
             nli_result = self._run_nli(premise=se.passage, hypothesis=claim)
             css_i = nli_result.entailment_prob * se.evidence_quality_score
 
@@ -199,13 +218,23 @@ class NLIVerifier:
             )
 
             if css_i > best_css:
-                best_css  = css_i
-                best_nli  = nli_result
-                best_ev   = se
+                best_css = css_i
+                best_nli = nli_result
+                best_ev  = se
 
-        label = self._classify(best_css)
+            # Track strongest contradiction signal
+            weighted_contradiction = (
+                nli_result.contradiction_prob * se.evidence_quality_score
+            )
+            if weighted_contradiction > max_contradiction:
+                max_contradiction = weighted_contradiction
 
-        logger.info(f"Claim: '{claim[:50]}' -> {label} (CSS={best_css:.3f})")
+        label = self._classify(best_css, max_contradiction)
+
+        logger.info(
+            f"Claim: '{claim[:50]}' -> {label} "
+            f"(CSS={best_css:.3f}, max_contra={max_contradiction:.3f})"
+        )
 
         return ClaimVerificationResult(
             claim=claim,
@@ -220,24 +249,16 @@ class NLIVerifier:
     def verify_batch(
         self, qa_results: List[QualityAssessedRetrieval]
     ) -> List[ClaimVerificationResult]:
-        """
-        Verify a list of claims.
-
-        Args:
-            qa_results: List of QualityAssessedRetrieval objects.
-
-        Returns:
-            List of ClaimVerificationResult objects.
-        """
+        """Verify a list of claims."""
         results = []
         for i, qa in enumerate(qa_results):
             logger.info(f"Verifying claim {i+1}/{len(qa_results)}")
             results.append(self.verify(qa))
         return results
 
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # Private: Model Loading
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def _load_nli_model(self) -> None:
         """
@@ -248,8 +269,7 @@ class NLIVerifier:
             {0: "contradiction", 1: "neutral", 2: "entailment"}
 
         We use integer indices -- not label name strings -- to extract
-        probabilities, ensuring correctness even if the string labels
-        in the config change between model revisions.
+        probabilities, ensuring correctness even if string labels change.
         """
         model_name = self.config.nli_model_name
 
@@ -277,12 +297,11 @@ class NLIVerifier:
         self._model.to(self._device)
         self._model.eval()
 
-        # Log the id2label at load time for reproducibility
+        # Log and validate the id2label at load time
         id2label = self._model.config.id2label
         logger.info(f"NLI model id2label: {id2label}")
         # Expected: {0: "contradiction", 1: "neutral", 2: "entailment"}
 
-        # Warn if label order differs from what we assume
         expected = {0: "contradiction", 1: "neutral", 2: "entailment"}
         for idx, expected_label in expected.items():
             actual = id2label.get(idx, "")
@@ -293,7 +312,6 @@ class NLIVerifier:
                     f"Full mapping: {id2label}"
                 )
 
-        # Cache at class level
         NLIVerifier._tokenizer_cache   = self._tokenizer
         NLIVerifier._model_cache       = self._model
         NLIVerifier._cached_model_name = model_name
@@ -305,9 +323,9 @@ class NLIVerifier:
             return torch.device("cuda")
         return torch.device("cpu")
 
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # Private: Pairwise NLI Inference
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def _run_nli(self, premise: str, hypothesis: str) -> NLIResult:
         """
@@ -319,9 +337,12 @@ class NLIVerifier:
             1 -> neutral
             2 -> entailment
 
-        Softmax converts logits to probabilities. Values are extracted
-        by integer index (NOT by label-name lookup).
-        id2label: {0: "contradiction", 1: "neutral", 2: "entailment"}
+        Softmax converts logits to probabilities extracted by integer index.
+
+        IMPORTANT: Both premise AND hypothesis reach the model as a
+        genuine sequence pair.  The claim text is the hypothesis;
+        the evidence passage is the premise.  This is verified by the
+        NLI unit tests in tests/test_nli_verifier.py.
 
         Args:
             premise:    Evidence passage (the "fact source").
@@ -330,14 +351,11 @@ class NLIVerifier:
         Returns:
             NLIResult with probabilities for each label.
         """
-        # Character-level truncation before tokenization
         max_chars  = self.config.nli_max_length
         premise    = premise[:max_chars]
-        hypothesis = hypothesis[:max_chars // 4]   # claims are typically shorter
+        hypothesis = hypothesis[:max_chars // 4]
 
         try:
-            # Encode as a sequence pair; the tokenizer inserts the separator
-            # tokens required by BART: <s>...<\s><\s>...<\s>
             inputs = self._tokenizer(
                 premise,
                 hypothesis,
@@ -351,10 +369,8 @@ class NLIVerifier:
             with torch.no_grad():
                 logits = self._model(**inputs).logits  # shape: [1, 3]
 
-            # Convert logits to probabilities via softmax
             probs = F.softmax(logits, dim=-1).squeeze(0)  # shape: [3]
 
-            # Extract by integer index (NOT by label-name lookup)
             # id2label: {0: "contradiction", 1: "neutral", 2: "entailment"}
             contradiction_prob = float(probs[0].item())
             neutral_prob       = float(probs[1].item())
@@ -369,7 +385,6 @@ class NLIVerifier:
 
         except Exception as e:
             logger.error(f"NLI inference failed: {e}")
-            # Return neutral on failure (conservative: don't flag as hallucination)
             return NLIResult(
                 entailment_prob=0.0,
                 neutral_prob=1.0,
@@ -377,21 +392,29 @@ class NLIVerifier:
                 evidence_passage=premise,
             )
 
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # Private: Classification
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
-    def _classify(self, css: float) -> VerificationLabel:
+    def _classify(self, css: float, max_contradiction: float) -> VerificationLabel:
         """
-        Map a Claim Support Score (CSS) to a VerificationLabel.
+        Map CSS + contradiction signal to a VerificationLabel.
 
-        Thresholds from FrameworkConfig:
-            CSS >= css_supported                    -> SUPPORTED
-            css_insufficient <= CSS < css_supported -> INSUFFICIENT_EVIDENCE
-            CSS <  css_insufficient                 -> HALLUCINATED
+        Logic:
+            CSS >= css_supported  ->  SUPPORTED
+            CSS >= css_insufficient (but < css_supported)  ->  UNVERIFIABLE
+            CSS <  css_insufficient:
+                max_contradiction >= 0.40  ->  CONTRADICTED
+                else                       ->  UNVERIFIABLE
+
+        The threshold for CONTRADICTED (0.40 weighted contradiction) is
+        intentionally conservative: we only flag a claim as contradicted
+        when the evidence actively and convincingly contradicts it.
+        A weak retrieval or neutral evidence must NOT produce CONTRADICTED.
 
         Args:
-            css: Claim Support Score in [0, 1].
+            css:              Best Claim Support Score across evidence.
+            max_contradiction: Best weighted contradiction score.
 
         Returns:
             VerificationLabel enum value.
@@ -399,6 +422,9 @@ class NLIVerifier:
         if css >= self.config.css_supported:
             return VerificationLabel.SUPPORTED
         elif css >= self.config.css_insufficient:
-            return VerificationLabel.INSUFFICIENT_EVIDENCE
+            return VerificationLabel.UNVERIFIABLE
         else:
-            return VerificationLabel.HALLUCINATED
+            # Low CSS -- check whether evidence actively contradicts
+            if max_contradiction >= self.config.css_insufficient:
+                return VerificationLabel.CONTRADICTED
+            return VerificationLabel.UNVERIFIABLE

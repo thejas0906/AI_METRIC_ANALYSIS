@@ -55,11 +55,22 @@ from verification.evidence_quality import QualityAssessedRetrieval
 # ──────────────────────────────────────────────────────────────────
 
 class CorrectionStatus(str, Enum):
-    """Outcome of the correction attempt for a single claim."""
-    PRESERVED   = "PRESERVED"    # Supported claim, not modified
-    CORRECTED   = "CORRECTED"    # Hallucinated claim successfully corrected
-    FLAGGED     = "FLAGGED"      # Insufficient evidence, flagged only
-    FAILED      = "FAILED"       # Correction attempted but couldn't verify
+    """
+    Outcome of the correction attempt for a single claim.
+
+    PRESERVED:                Claim is SUPPORTED; text is unchanged.
+    CORRECTED:                Claim was CONTRADICTED; successfully corrected.
+    FLAGGED:                  Claim is UNVERIFIABLE; flagged but not corrected.
+                              Do NOT invent a replacement for unverifiable claims.
+    FAILED:                   Correction was attempted but exceeded max iterations.
+    FINAL_VERIFICATION_FAILED: Phase 7 fresh retrieval failed; cannot independently
+                              verify the corrected claim. Distinct from FAILED.
+    """
+    PRESERVED                  = "PRESERVED"
+    CORRECTED                  = "CORRECTED"
+    FLAGGED                    = "FLAGGED"
+    FAILED                     = "FAILED"
+    FINAL_VERIFICATION_FAILED  = "FINAL_VERIFICATION_FAILED"
 
 
 @dataclass
@@ -70,19 +81,20 @@ class CorrectedClaim:
     Attributes:
         original_claim:    The claim as extracted from the LLM answer.
         corrected_claim:   The rewritten claim (or original if preserved).
-        status:            PRESERVED / CORRECTED / FLAGGED / FAILED
+        status:            PRESERVED / CORRECTED / FLAGGED / FAILED /
+                           FINAL_VERIFICATION_FAILED
         verification_result: Phase 4 verification result.
         evidence_used:     Evidence passage used for correction.
         correction_iterations: Number of correction attempts made.
-        was_modified:      True if the claim text changed.
+        was_modified:      True if the claim text actually changed.
     """
-    original_claim:      str
-    corrected_claim:     str
-    status:              CorrectionStatus
-    verification_result: ClaimVerificationResult
-    evidence_used:       str                    = ""
-    correction_iterations: int                 = 0
-    was_modified:        bool                  = False
+    original_claim:        str
+    corrected_claim:       str
+    status:                CorrectionStatus
+    verification_result:   ClaimVerificationResult
+    evidence_used:         str = ""
+    correction_iterations: int = 0
+    was_modified:          bool = False
 
     def __post_init__(self):
         self.was_modified = self.original_claim != self.corrected_claim
@@ -157,7 +169,7 @@ class ClaimCorrector:
                 verification_result=verification_result,
             )
 
-        if label == VerificationLabel.INSUFFICIENT_EVIDENCE:
+        if label in (VerificationLabel.UNVERIFIABLE, VerificationLabel.INSUFFICIENT_EVIDENCE):
             # ⚠️  Not enough evidence to confirm or deny — flag it
             logger.info(f"FLAGGED (insufficient evidence): '{claim[:60]}'")
             return CorrectedClaim(
@@ -240,7 +252,7 @@ class ClaimCorrector:
                 status=CorrectionStatus.FAILED,
                 verification_result=ClaimVerificationResult(
                     claim=claim,
-                    label=VerificationLabel.HALLUCINATED,
+                    label=VerificationLabel.CONTRADICTED,
                     css=0.0,
                 ),
                 evidence_used="",
@@ -270,7 +282,7 @@ class ClaimCorrector:
             status=status,
             verification_result=ClaimVerificationResult(
                 claim=corrected_text,
-                label=VerificationLabel.HALLUCINATED,   # re-verified in Phase 7
+                label=VerificationLabel.CONTRADICTED,   # re-verified in Phase 7
                 css=0.0,
             ),
             evidence_used=evidence_used,

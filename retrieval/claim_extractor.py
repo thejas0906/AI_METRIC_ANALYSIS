@@ -4,84 +4,178 @@ claim_extractor.py  (Phase 1)
 Claim Extraction Module
 -----------------------
 Converts a free-form LLM-generated answer into a list of
-*atomic factual claims* — short, independently verifiable
-statements that can each be sent to the evidence retrieval
-and NLI verification pipeline.
+atomic factual claims that retain their ORIGINAL CHARACTER OFFSETS
+in the source response.
+
+Each extracted claim is represented as a ClaimSpan:
+    ClaimSpan(
+        claim_id   = int,         # zero-based index
+        text       = str,         # the atomic claim text
+        start_char = int,         # start offset in original_response
+        end_char   = int,         # end offset in original_response
+        original_text = str,      # the original sentence (before atomization)
+    )
+
+This span information enables the ResponseReconstructor to perform
+true span-level surgery on the original response: replacing ONLY the
+hallucinated spans and leaving all surrounding text intact.
 
 Pipeline:
   LLM Answer
-      ↓
-  Sentence Segmentation (spaCy)
-      ↓
+      |
+  Sentence Segmentation (spaCy, preserving char offsets)
+      |
   Sentence Filtering  (length, punctuation, question removal)
-      ↓
+      |
   Claim Atomization   (coordinate clause splitting)
-      ↓
-  Claim Deduplication
-      ↓
-  List[str]  ← atomic claims
+      |
+  ClaimSpan creation (with start_char/end_char)
+      |
+  List[ClaimSpan]
 
 Design Decisions:
 -----------------
-- We use spaCy's dependency parser and sentence boundary
-  detector rather than a fine-tuned claim extraction model
-  (e.g., ClaimBuster) to keep the system *laptop-friendly*.
-- Coordinate clause splitting ("X and Y did Z") allows each
-  entity to be verified independently.
-- Questions and greetings are filtered because they are not
-  verifiable factual claims.
-
-References:
------------
-- spaCy: https://spacy.io/
-- ClaimBuster (for future upgrade): https://idir.uta.edu/claimbuster/
+- We use spaCy's sentence boundary detector which exposes character
+  offsets (sent.start_char, sent.end_char) directly.
+- Atomization (coordinate clause splitting) preserves the parent
+  sentence's offsets as the span, since the atomic claim is a
+  *logical sub-unit* of that sentence span.
+- The `extract()` method still returns List[str] for backward
+  compatibility with tests that predate this change.
+- `extract_spans()` is the primary method used by the pipeline.
 """
 
 import re
 import spacy
+from dataclasses import dataclass
 from typing import List, Optional
 from loguru import logger
 
 from config import FrameworkConfig
 
 
+@dataclass
+class ClaimSpan:
+    """
+    An atomic factual claim with its location in the original response.
+
+    Attributes:
+        claim_id:      Zero-based index of this claim in the extraction order.
+        text:          The atomic claim text (normalized, ends with '.').
+        start_char:    Start character offset in the original LLM response.
+        end_char:      End character offset in the original LLM response.
+        original_text: The raw sentence text before atomization.
+    """
+    claim_id:     int
+    text:         str
+    start_char:   int
+    end_char:     int
+    original_text: str = ""
+
+
 class ClaimExtractor:
     """
-    Extracts atomic factual claims from LLM-generated text.
+    Extracts atomic factual claims from LLM-generated text, returning
+    ClaimSpan objects that retain character offsets in the original response.
 
-    Usage:
+    Usage (primary):
         extractor = ClaimExtractor(config)
+        spans = extractor.extract_spans("Einstein was born in 1879 in Germany.")
+        for s in spans:
+            print(s.text, s.start_char, s.end_char)
+
+    Usage (legacy / backward compat):
         claims = extractor.extract("Einstein was born in 1879 in Germany.")
-        # → ["Einstein was born in 1879.", "Einstein was born in Germany."]
+        # Returns List[str]
     """
 
     def __init__(self, config: Optional[FrameworkConfig] = None):
-        """
-        Initialize the claim extractor by loading the spaCy NLP model.
-
-        Args:
-            config: FrameworkConfig instance; uses defaults if None.
-        """
         self.config = config or FrameworkConfig()
         logger.info(f"Loading spaCy model: {self.config.spacy_model}")
         try:
             self.nlp = spacy.load(self.config.spacy_model)
         except OSError:
-            # Provide a helpful error if the model hasn't been downloaded
             raise RuntimeError(
                 f"spaCy model '{self.config.spacy_model}' not found.\n"
                 f"Install it with: python -m spacy download {self.config.spacy_model}"
             )
         logger.info("ClaimExtractor initialized successfully.")
 
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # Public API
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+
+    def extract_spans(self, llm_answer: str) -> List[ClaimSpan]:
+        """
+        Main entry point. Extract atomic factual claims WITH character
+        offsets into the original response text.
+
+        Args:
+            llm_answer: Raw text output from the LLM.
+
+        Returns:
+            List of ClaimSpan objects with start_char/end_char offsets.
+        """
+        if not llm_answer or not llm_answer.strip():
+            logger.warning("Empty LLM answer received -- no claims extracted.")
+            return []
+
+        logger.debug(f"Extracting claim spans from answer ({len(llm_answer)} chars).")
+
+        doc = self.nlp(llm_answer)
+
+        claim_spans: List[ClaimSpan] = []
+        seen_texts: set = set()
+        claim_id = 0
+
+        for sent in doc.sents:
+            sent_text = sent.text.strip()
+            if not sent_text:
+                continue
+
+            # Skip non-factual sentences
+            if not self._is_factual(sent_text):
+                continue
+
+            # Character offsets in the original string
+            # sent.start_char and sent.end_char are from the original doc
+            sent_start = sent.start_char
+            sent_end   = sent.end_char
+
+            # Atomize the sentence into sub-claims
+            atomic_texts = self._atomize(sent_text)
+
+            for atomic in atomic_texts:
+                if len(atomic) < self.config.min_claim_length:
+                    continue
+
+                # Dedup by normalized text
+                key = atomic.lower().rstrip(".")
+                if key in seen_texts:
+                    continue
+                seen_texts.add(key)
+
+                # The span covers the full original sentence; when there
+                # is only one atomic claim per sentence this is exact.
+                # When a sentence is split into multiple claims, they all
+                # share the parent sentence span (the reconstructor uses
+                # this to locate and replace the right portion).
+                span = ClaimSpan(
+                    claim_id=claim_id,
+                    text=atomic,
+                    start_char=sent_start,
+                    end_char=sent_end,
+                    original_text=sent_text,
+                )
+                claim_spans.append(span)
+                claim_id += 1
+
+        logger.info(f"Extracted {len(claim_spans)} claim spans.")
+        return claim_spans
 
     def extract(self, llm_answer: str) -> List[str]:
         """
-        Main entry point. Extract atomic factual claims from
-        an LLM-generated answer.
+        Backward-compatible method: returns only the claim strings.
 
         Args:
             llm_answer: Raw text output from the LLM.
@@ -89,141 +183,59 @@ class ClaimExtractor:
         Returns:
             List of atomic factual claim strings.
         """
-        if not llm_answer or not llm_answer.strip():
-            logger.warning("Empty LLM answer received — no claims extracted.")
-            return []
+        return [cs.text for cs in self.extract_spans(llm_answer)]
 
-        logger.debug(f"Extracting claims from answer ({len(llm_answer)} chars).")
-
-        # Step 1: Sentence segmentation using spaCy
-        sentences = self._segment_sentences(llm_answer)
-        logger.debug(f"Segmented into {len(sentences)} sentences.")
-
-        # Step 2: Filter out non-factual sentences
-        filtered = self._filter_sentences(sentences)
-        logger.debug(f"{len(filtered)} sentences after filtering.")
-
-        # Step 3: Split coordinate clauses into atomic claims
-        atomic_claims = []
-        for sent in filtered:
-            atomic_claims.extend(self._atomize(sent))
-
-        # Step 4: Deduplicate while preserving order
-        unique_claims = self._deduplicate(atomic_claims)
-
-        logger.info(f"Extracted {len(unique_claims)} atomic claims.")
-        return unique_claims
-
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # Private Helpers
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
-    def _segment_sentences(self, text: str) -> List[str]:
+    def _is_factual(self, text: str) -> bool:
         """
-        Use spaCy's sentence boundary detector to split text
-        into individual sentences.
-
-        Args:
-            text: Input text.
-
-        Returns:
-            List of sentence strings.
+        Return True if the sentence is a declarative factual claim.
+        Questions, exclamations, and transition phrases are excluded.
         """
-        doc = self.nlp(text)
-        # Each `doc.sents` span is a spaCy Span object; strip whitespace
-        return [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+        if text.endswith("?") or text.endswith("!"):
+            return False
+        if len(text) < self.config.min_claim_length:
+            return False
 
-    def _filter_sentences(self, sentences: List[str]) -> List[str]:
-        """
-        Remove sentences that are NOT atomic factual claims:
-        - Questions (end with '?')
-        - Exclamations (end with '!')
-        - Very short or very long sentences (likely noise)
-        - Sentences that are greetings or transitions
-
-        Args:
-            sentences: Raw segmented sentences.
-
-        Returns:
-            Filtered list of candidate claim sentences.
-        """
-        TRANSITION_PHRASES = {
+        TRANSITION_PREFIXES = {
             "however", "therefore", "in conclusion", "in summary",
             "to summarize", "overall", "on the other hand",
             "firstly", "secondly", "finally", "additionally",
-            "in other words", "as mentioned", "as stated"
+            "in other words", "as mentioned", "as stated",
         }
-
-        filtered = []
-        for sent in sentences:
-            # Remove questions and exclamations
-            if sent.endswith("?") or sent.endswith("!"):
-                logger.debug(f"Filtered (non-declarative): {sent[:60]}")
-                continue
-
-            # Check length constraints
-            if len(sent) < self.config.min_claim_length:
-                logger.debug(f"Filtered (too short): {sent}")
-                continue
-            if len(sent) > self.config.max_claim_length:
-                logger.debug(f"Filtered (too long, splitting needed): {sent[:60]}...")
-                # Still include it; long sentences will be handled by atomizer
-
-            # Filter pure transition sentences
-            lower = sent.lower()
-            if any(lower.startswith(phrase) for phrase in TRANSITION_PHRASES):
-                logger.debug(f"Filtered (transition): {sent[:60]}")
-                continue
-
-            filtered.append(sent)
-
-        return filtered
+        lower = text.lower()
+        if any(lower.startswith(p) for p in TRANSITION_PREFIXES):
+            return False
+        return True
 
     def _atomize(self, sentence: str) -> List[str]:
         """
         Split a sentence containing coordinate clauses into
         individual atomic claims.
 
-        Strategy:
-        - Parse with spaCy to find coordinating conjunctions (cc)
-          attached to verb phrases.
-        - If 'and' coordinates two independent verb phrases, split.
-        - Otherwise, keep the sentence as-is.
-
-        Example:
-          "Einstein won the Nobel Prize and he was born in Germany."
-          → ["Einstein won the Nobel Prize.",
-             "He was born in Germany."]
-
-        Args:
-            sentence: A single candidate claim sentence.
-
-        Returns:
-            List of one or more atomic claim strings.
+        Strategy: parse with spaCy, find coordinating conjunctions
+        attached to root verb phrases, split at those points.
         """
         doc = self.nlp(sentence)
 
-        # Identify root verb and coordinate verbs
         root = None
         coord_verbs = []
 
         for token in doc:
             if token.dep_ == "ROOT":
                 root = token
-            # A conj dependent on the ROOT with a 'cc' sibling is a coordinate verb
             if token.dep_ == "conj" and token.head.dep_ == "ROOT":
                 coord_verbs.append(token)
 
-        # If no coordinate verbs found, return as-is
         if not coord_verbs or root is None:
             return [self._clean_claim(sentence)]
 
-        # Split sentence at the coordinate verb positions
         claims = []
         prev_end = 0
 
         for cv in coord_verbs:
-            # Find the start of the conjunction token that precedes this conj verb
             cc_token = None
             for tok in cv.lefts:
                 if tok.dep_ == "cc":
@@ -231,53 +243,21 @@ class ClaimExtractor:
                     break
 
             split_idx = cc_token.i if cc_token else cv.i
-            # Reconstruct the first part
             part1 = doc[prev_end:split_idx].text.strip()
             if part1:
                 claims.append(self._clean_claim(part1))
-            prev_end = cv.i  # next segment starts at the conj verb
+            prev_end = cv.i
 
-        # Add the final segment
         final_part = doc[prev_end:].text.strip()
         if final_part:
-            # Reconstruct subject for the final clause if missing
             claims.append(self._clean_claim(final_part))
 
-        # Fallback: if splitting produced empty or malformed output, keep original
-        valid_claims = [c for c in claims if len(c) >= self.config.min_claim_length]
-        return valid_claims if valid_claims else [self._clean_claim(sentence)]
+        valid = [c for c in claims if len(c) >= self.config.min_claim_length]
+        return valid if valid else [self._clean_claim(sentence)]
 
     def _clean_claim(self, text: str) -> str:
-        """
-        Normalize whitespace and ensure the claim ends with a period.
-
-        Args:
-            text: Raw claim string.
-
-        Returns:
-            Cleaned claim string.
-        """
+        """Normalize whitespace and ensure claim ends with a period."""
         text = re.sub(r"\s+", " ", text).strip()
         if text and not text.endswith("."):
             text += "."
         return text
-
-    def _deduplicate(self, claims: List[str]) -> List[str]:
-        """
-        Remove duplicate claims while preserving insertion order.
-
-        Args:
-            claims: Possibly duplicate list of claim strings.
-
-        Returns:
-            Deduplicated list.
-        """
-        seen = set()
-        unique = []
-        for claim in claims:
-            # Normalize for comparison (lowercase, strip punctuation)
-            key = claim.lower().rstrip(".")
-            if key not in seen:
-                seen.add(key)
-                unique.append(claim)
-        return unique

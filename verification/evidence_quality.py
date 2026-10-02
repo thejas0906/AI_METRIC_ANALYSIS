@@ -243,7 +243,7 @@ class EvidenceQualityAssessor:
         detected_type = self.classify_source(ev.source_url)
         return self.weights.get(detected_type, self.weights["unknown"])
 
-@staticmethod
+    @staticmethod
     def _normalize_relevance(raw_score: float) -> float:
         """
         Map a raw BM25-style relevance score to [0, 1].
