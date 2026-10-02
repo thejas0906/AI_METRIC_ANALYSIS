@@ -66,17 +66,21 @@ class ClaimSpan:
         end_char:      End character offset in the original LLM response.
         original_text: The raw sentence text before atomization.
     """
-    claim_id:     int
-    text:         str
-    start_char:   int
-    end_char:     int
+    claim_id:      int
+    text:          str
+    start_char:    int
+    end_char:      int
     original_text: str = ""
+
+
+# Alias for research specification compliance
+Claim = ClaimSpan
 
 
 class ClaimExtractor:
     """
     Extracts atomic factual claims from LLM-generated text, returning
-    ClaimSpan objects that retain character offsets in the original response.
+    ClaimSpan / Claim objects that retain character offsets in the original response.
 
     Usage (primary):
         extractor = ClaimExtractor(config)
@@ -110,6 +114,9 @@ class ClaimExtractor:
         Main entry point. Extract atomic factual claims WITH character
         offsets into the original response text.
 
+        Preserves multiple occurrences of duplicate claim text so that each
+        occurrence maintains its distinct character span and unique claim_id.
+
         Args:
             llm_answer: Raw text output from the LLM.
 
@@ -123,9 +130,7 @@ class ClaimExtractor:
         logger.debug(f"Extracting claim spans from answer ({len(llm_answer)} chars).")
 
         doc = self.nlp(llm_answer)
-
         claim_spans: List[ClaimSpan] = []
-        seen_texts: set = set()
         claim_id = 0
 
         for sent in doc.sents:
@@ -133,12 +138,11 @@ class ClaimExtractor:
             if not sent_text:
                 continue
 
-            # Skip non-factual sentences
+            # Skip non-factual sentences (questions, exclamations, transitions)
             if not self._is_factual(sent_text):
                 continue
 
             # Character offsets in the original string
-            # sent.start_char and sent.end_char are from the original doc
             sent_start = sent.start_char
             sent_end   = sent.end_char
 
@@ -149,23 +153,24 @@ class ClaimExtractor:
                 if len(atomic) < self.config.min_claim_length:
                     continue
 
-                # Dedup by normalized text
-                key = atomic.lower().rstrip(".")
-                if key in seen_texts:
-                    continue
-                seen_texts.add(key)
+                # Locate sub-clause offset within sentence if possible
+                clean_clause = atomic.rstrip(".")
+                sub_offset = sent_text.find(clean_clause)
+                if sub_offset != -1 and len(atomic_texts) > 1:
+                    span_start = sent_start + sub_offset
+                    span_end   = span_start + len(clean_clause)
+                    orig_span_text = llm_answer[span_start:span_end]
+                else:
+                    span_start = sent_start
+                    span_end   = sent_end
+                    orig_span_text = sent_text
 
-                # The span covers the full original sentence; when there
-                # is only one atomic claim per sentence this is exact.
-                # When a sentence is split into multiple claims, they all
-                # share the parent sentence span (the reconstructor uses
-                # this to locate and replace the right portion).
                 span = ClaimSpan(
                     claim_id=claim_id,
                     text=atomic,
-                    start_char=sent_start,
-                    end_char=sent_end,
-                    original_text=sent_text,
+                    start_char=span_start,
+                    end_char=span_end,
+                    original_text=orig_span_text,
                 )
                 claim_spans.append(span)
                 claim_id += 1
@@ -173,17 +178,29 @@ class ClaimExtractor:
         logger.info(f"Extracted {len(claim_spans)} claim spans.")
         return claim_spans
 
-    def extract(self, llm_answer: str) -> List[str]:
+    def extract(self, llm_answer: str, dedup: bool = True) -> List[str]:
         """
-        Backward-compatible method: returns only the claim strings.
+        Backward-compatible method: returns claim strings.
 
         Args:
             llm_answer: Raw text output from the LLM.
+            dedup:      If True, deduplicates identical claim strings (legacy behavior).
 
         Returns:
             List of atomic factual claim strings.
         """
-        return [cs.text for cs in self.extract_spans(llm_answer)]
+        spans = self.extract_spans(llm_answer)
+        if not dedup:
+            return [cs.text for cs in spans]
+
+        seen = set()
+        deduped = []
+        for cs in spans:
+            key = cs.text.lower().rstrip(".")
+            if key not in seen:
+                seen.add(key)
+                deduped.append(cs.text)
+        return deduped
 
     # ------------------------------------------------------------------
     # Private Helpers

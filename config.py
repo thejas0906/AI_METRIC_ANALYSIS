@@ -29,12 +29,9 @@ NLI_BATCH_SIZE = 4            # Batch size for NLI inference (laptop-friendly)
 NLI_DEVICE = "cpu"            # Use "cuda" if GPU is available
 
 
-# ──────────────────────────────────────────────────────────────────
-# Claim Support Score (CSS) Thresholds
-# ──────────────────────────────────────────────────────────────────
-CSS_SUPPORTED_THRESHOLD    = 0.75   # CSS >= 0.75  → SUPPORTED
-CSS_INSUFFICIENT_THRESHOLD = 0.40   # 0.40 <= CSS < 0.75 → INSUFFICIENT_EVIDENCE
-# CSS < 0.40 → HALLUCINATED
+CSS_SUPPORTED_THRESHOLD    = 0.75   # CSS >= 0.75  → SUPPORTED (strong entailment)
+CSS_INSUFFICIENT_THRESHOLD = 0.40   # 0.40 <= CSS < 0.75 → UNVERIFIABLE
+CONTRADICTION_THRESHOLD    = 0.40   # weighted contradiction >= 0.40 → CONTRADICTED
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -116,6 +113,7 @@ class FrameworkConfig:
     nli_device:               str            = NLI_DEVICE
     css_supported:            float          = CSS_SUPPORTED_THRESHOLD
     css_insufficient:         float          = CSS_INSUFFICIENT_THRESHOLD
+    contradiction_threshold:  float          = CONTRADICTION_THRESHOLD
     evidence_weights:         Dict[str, float] = field(default_factory=lambda: EVIDENCE_WEIGHTS.copy())
     wikipedia_language:       str            = WIKIPEDIA_LANGUAGE
     wikipedia_top_k:          int            = WIKIPEDIA_TOP_K

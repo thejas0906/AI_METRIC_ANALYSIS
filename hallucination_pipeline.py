@@ -420,72 +420,150 @@ class HallucinationCorrectionPipeline:
         verbose: bool = True,
     ) -> Dict[str, Any]:
         """
-        Run the pipeline on a list of DatasetSample objects and
-        compute evaluation metrics.
+        Run the pipeline on a list of DatasetSample or ResponseEvaluationSample objects
+        and compute evaluation metrics.
 
-        The primary unit of evaluation is a full LLM response
-        (which may contain multiple factual claims), not a single claim.
-        When samples contain single claims (e.g., FEVER-style), the
-        claim is treated as a single-sentence LLM response.
+        The primary unit of evaluation is a full LLM response containing multiple
+        factual claims, which are each verified and selectively corrected. The final
+        reconstructed response preserves unaffected sections verbatim.
 
         Args:
-            samples:  List of DatasetSample objects from DatasetLoader.
+            samples:  List of DatasetSample or ResponseEvaluationSample objects.
             verbose:  If True, show progress bar.
 
         Returns:
             Dict with 'metrics' (MetricsResult) and 'pipeline_outputs'.
         """
         from evaluation.metrics import EvaluationMetrics, CorrectionOutcome
-        from evaluation.dataset_loader import DatasetSample
 
         pipeline_outputs = []
         correction_outcomes = []
 
         for sample in tqdm(samples, desc="Evaluating", disable=not verbose):
-            result = self.run(sample.claim, query=sample.context, verbose=False)
+            response_text = getattr(sample, "response", sample.claim)
+            query_text = getattr(sample, "question", getattr(sample, "context", ""))
+            result = self.run(response_text, query=query_text, verbose=False)
 
-            if result.verification_results:
-                primary_vr = result.verification_results[0]
-                predicted_hallucinated = (
-                    primary_vr.label == VerificationLabel.CONTRADICTED
-                )
-                was_corrected = (
-                    result.corrected_claims and
-                    result.corrected_claims[0].status == CorrectionStatus.CORRECTED
-                )
-                post_verified = False
-                if result.final_verification:
-                    post_verified = (
-                        result.final_verification[0].css >= self.config.css_supported
+            gold_claims = getattr(sample, "gold_claims", None)
+            if gold_claims:
+                # Multi-claim response evaluation: evaluate every extracted claim
+                for i, span in enumerate(result.claim_spans):
+                    vr = result.verification_results[i] if i < len(result.verification_results) else None
+                    cc = result.corrected_claims[i] if i < len(result.corrected_claims) else None
+                    fv = result.final_verification[i] if i < len(result.final_verification) else None
+
+                    # Match with gold claim by text overlap or positional index
+                    matched_gold = None
+                    for gc in gold_claims:
+                        if (
+                            gc.claim_text.lower().rstrip(".") in span.text.lower().rstrip(".")
+                            or span.text.lower().rstrip(".") in gc.claim_text.lower().rstrip(".")
+                        ):
+                            matched_gold = gc
+                            break
+                    if not matched_gold and i < len(gold_claims):
+                        matched_gold = gold_claims[i]
+
+                    gold_is_contradicted = (
+                        (matched_gold.gold_label == "CONTRADICTED") if matched_gold else False
                     )
-                was_preserved = (
-                    result.corrected_claims and
-                    result.corrected_claims[0].status == CorrectionStatus.PRESERVED
-                )
-            else:
-                predicted_hallucinated = False
-                was_corrected = False
-                post_verified = False
-                was_preserved = True
+                    gold_is_supported = (
+                        (matched_gold.gold_label == "SUPPORTED") if matched_gold else True
+                    )
 
-            outcome = CorrectionOutcome(
-                claim=sample.claim,
-                ground_truth_label=sample.ground_truth,
-                predicted_label=predicted_hallucinated,
-                was_corrected=was_corrected,
-                post_correction_verified=post_verified,
-                was_preserved=was_preserved,
-                original_was_supported=not sample.ground_truth,
-            )
-            correction_outcomes.append(outcome)
+                    pred_contradicted = (
+                        (vr.label == VerificationLabel.CONTRADICTED) if vr else False
+                    )
+                    was_corrected = (
+                        (cc.status == CorrectionStatus.CORRECTED) if cc else False
+                    )
+                    was_preserved = (
+                        (cc.status == CorrectionStatus.PRESERVED) if cc else True
+                    )
+                    was_unverifiable = (
+                        (vr.label == VerificationLabel.UNVERIFIABLE) if vr else False
+                    )
+
+                    post_verified = (
+                        (fv.css >= self.config.css_supported) if fv else False
+                    )
+
+                    is_gt_correct = None
+                    if matched_gold and matched_gold.gold_correction and cc:
+                        is_gt_correct = (
+                            cc.corrected_claim.strip().lower()
+                            == matched_gold.gold_correction.strip().lower()
+                        )
+
+                    outcome = CorrectionOutcome(
+                        claim=span.text,
+                        ground_truth_label=gold_is_contradicted,
+                        predicted_label=pred_contradicted,
+                        was_corrected=was_corrected,
+                        post_correction_verified=post_verified,
+                        was_preserved=was_preserved,
+                        original_was_supported=gold_is_supported,
+                        was_unverifiable=was_unverifiable,
+                        gold_label=matched_gold.gold_label if matched_gold else "",
+                        gold_correction=matched_gold.gold_correction if matched_gold else None,
+                        is_ground_truth_correct=is_gt_correct,
+                    )
+                    correction_outcomes.append(outcome)
+
+            else:
+                # Single-claim or legacy sample format
+                items_to_eval = result.claim_spans if result.claim_spans else [None]
+                for i, span in enumerate(items_to_eval):
+                    vr = (
+                        result.verification_results[i]
+                        if (result.verification_results and i < len(result.verification_results))
+                        else None
+                    )
+                    cc = (
+                        result.corrected_claims[i]
+                        if (result.corrected_claims and i < len(result.corrected_claims))
+                        else None
+                    )
+                    fv = (
+                        result.final_verification[i]
+                        if (result.final_verification and i < len(result.final_verification))
+                        else None
+                    )
+
+                    pred_contradicted = (
+                        (vr.label == VerificationLabel.CONTRADICTED) if vr else False
+                    )
+                    was_corrected = (
+                        (cc.status == CorrectionStatus.CORRECTED) if cc else False
+                    )
+                    was_preserved = (
+                        (cc.status == CorrectionStatus.PRESERVED) if cc else True
+                    )
+                    was_unverifiable = (
+                        (vr.label == VerificationLabel.UNVERIFIABLE) if vr else False
+                    )
+                    post_verified = (
+                        (fv.css >= self.config.css_supported) if fv else False
+                    )
+
+                    outcome = CorrectionOutcome(
+                        claim=span.text if span else sample.claim,
+                        ground_truth_label=sample.ground_truth,
+                        predicted_label=pred_contradicted,
+                        was_corrected=was_corrected,
+                        post_correction_verified=post_verified,
+                        was_preserved=was_preserved,
+                        original_was_supported=not sample.ground_truth,
+                        was_unverifiable=was_unverifiable,
+                    )
+                    correction_outcomes.append(outcome)
+
             pipeline_outputs.append({
-                "claim":                    sample.claim,
-                "ground_truth":             sample.ground_truth,
-                "predicted":                predicted_hallucinated,
-                "was_corrected":            was_corrected,
-                "post_correction_verified": post_verified,
-                "was_preserved":            was_preserved,
-                "final_response":           result.final_response,
+                "original_response": response_text,
+                "final_response":    result.final_response,
+                "claims_extracted":  result.extracted_claims,
+                "corrected_count":   len([c for c in result.corrected_claims if c.status == CorrectionStatus.CORRECTED]),
+                "preserved_count":   len([c for c in result.corrected_claims if c.status == CorrectionStatus.PRESERVED]),
             })
 
         metrics_calculator = EvaluationMetrics()

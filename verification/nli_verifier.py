@@ -205,7 +205,7 @@ class NLIVerifier:
 
         for se in qa_result.scored_evidence:
             nli_result = self._run_nli(premise=se.passage, hypothesis=claim)
-            css_i = nli_result.entailment_prob * se.evidence_quality_score
+            css_i = min(1.0, max(0.0, float(nli_result.entailment_prob * se.evidence_quality_score)))
 
             all_nli.append(nli_result)
             all_css.append(css_i)
@@ -222,9 +222,9 @@ class NLIVerifier:
                 best_nli = nli_result
                 best_ev  = se
 
-            # Track strongest contradiction signal
-            weighted_contradiction = (
-                nli_result.contradiction_prob * se.evidence_quality_score
+            # Track strongest contradiction signal (bounded in [0, 1])
+            weighted_contradiction = min(
+                1.0, max(0.0, float(nli_result.contradiction_prob * se.evidence_quality_score))
             )
             if weighted_contradiction > max_contradiction:
                 max_contradiction = weighted_contradiction
@@ -401,30 +401,29 @@ class NLIVerifier:
         Map CSS + contradiction signal to a VerificationLabel.
 
         Logic:
-            CSS >= css_supported  ->  SUPPORTED
-            CSS >= css_insufficient (but < css_supported)  ->  UNVERIFIABLE
-            CSS <  css_insufficient:
-                max_contradiction >= 0.40  ->  CONTRADICTED
-                else                       ->  UNVERIFIABLE
+            strong entailment    (CSS >= css_supported)             -> SUPPORTED
+            strong contradiction (max_contra >= contradiction_thresh) -> CONTRADICTED
+            neither sufficiently strong                              -> UNVERIFIABLE
 
-        The threshold for CONTRADICTED (0.40 weighted contradiction) is
-        intentionally conservative: we only flag a claim as contradicted
-        when the evidence actively and convincingly contradicts it.
-        A weak retrieval or neutral evidence must NOT produce CONTRADICTED.
+        A retrieval failure or neutral evidence must NOT automatically
+        become a hallucination / contradiction: if evidence is absent or
+        weak, both CSS and max_contradiction are low, which maps to UNVERIFIABLE.
 
         Args:
-            css:              Best Claim Support Score across evidence.
-            max_contradiction: Best weighted contradiction score.
+            css:               Best Claim Support Score across evidence (bounded in [0, 1]).
+            max_contradiction: Best weighted contradiction score (bounded in [0, 1]).
 
         Returns:
-            VerificationLabel enum value.
+            VerificationLabel enum value (SUPPORTED, CONTRADICTED, or UNVERIFIABLE).
         """
+        contra_thresh = getattr(
+            self.config, "contradiction_threshold", self.config.css_insufficient
+        )
         if css >= self.config.css_supported:
             return VerificationLabel.SUPPORTED
-        elif css >= self.config.css_insufficient:
-            return VerificationLabel.UNVERIFIABLE
+        elif max_contradiction >= contra_thresh and css < self.config.css_insufficient:
+            return VerificationLabel.CONTRADICTED
+        elif max_contradiction >= contra_thresh and max_contradiction > css:
+            return VerificationLabel.CONTRADICTED
         else:
-            # Low CSS -- check whether evidence actively contradicts
-            if max_contradiction >= self.config.css_insufficient:
-                return VerificationLabel.CONTRADICTED
             return VerificationLabel.UNVERIFIABLE

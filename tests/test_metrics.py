@@ -269,3 +269,71 @@ class TestEdgeCases:
         calc = EvaluationMetrics()
         with pytest.raises(AssertionError):
             calc.compute([True, False], [True])
+
+    def test_detection_metric_aliases_and_hand_computed_rates(self):
+        """
+        Hand-computed test for:
+        - detection_precision, detection_recall, detection_f1 aliases
+        - unverifiable_rate
+        - incorrect_correction_rate
+        - edit_rate / modification_rate
+        - ground_truth_csr vs verifier_based_csr
+        """
+        outcomes = [
+            # Claim 1: GT=Contradicted, Pred=Contradicted, Corrected+Verified, matches gold
+            CorrectionOutcome(
+                claim="c1", ground_truth_label=True, predicted_label=True,
+                was_corrected=True, post_correction_verified=True, was_preserved=False,
+                original_was_supported=False, was_unverifiable=False,
+                gold_label="CONTRADICTED", gold_correction="c1_gold", is_ground_truth_correct=True,
+            ),
+            # Claim 2: GT=Contradicted, Pred=Contradicted, Corrected but NOT verified, does not match gold
+            CorrectionOutcome(
+                claim="c2", ground_truth_label=True, predicted_label=True,
+                was_corrected=True, post_correction_verified=False, was_preserved=False,
+                original_was_supported=False, was_unverifiable=False,
+                gold_label="CONTRADICTED", gold_correction="c2_gold", is_ground_truth_correct=False,
+            ),
+            # Claim 3: GT=Supported, Pred=Supported, Preserved
+            CorrectionOutcome(
+                claim="c3", ground_truth_label=False, predicted_label=False,
+                was_corrected=False, post_correction_verified=False, was_preserved=True,
+                original_was_supported=True, was_unverifiable=False,
+                gold_label="SUPPORTED",
+            ),
+            # Claim 4: GT=Supported, Pred=Unverifiable, Preserved
+            CorrectionOutcome(
+                claim="c4", ground_truth_label=False, predicted_label=False,
+                was_corrected=False, post_correction_verified=False, was_preserved=True,
+                original_was_supported=True, was_unverifiable=True,
+                gold_label="SUPPORTED",
+            ),
+        ]
+        gt = [o.ground_truth_label for o in outcomes]
+        pred = [o.predicted_label for o in outcomes]
+
+        calc = EvaluationMetrics()
+        res = calc.compute(gt, pred, outcomes)
+
+        # TP=2, TN=2, FP=0, FN=0 -> Precision=1.0, Recall=1.0, F1=1.0
+        assert res.detection_precision == pytest.approx(1.0)
+        assert res.detection_recall == pytest.approx(1.0)
+        assert res.detection_f1 == pytest.approx(1.0)
+
+        # Unverifiable rate = 1 / 4 = 0.25
+        assert res.unverifiable_rate == pytest.approx(0.25)
+
+        # Attempted corrections = 2 (c1, c2); Failed = 1 (c2) -> incorrect_correction_rate = 1/2 = 0.50
+        assert res.incorrect_correction_rate == pytest.approx(0.50)
+
+        # Edit rate = 2 modified / 4 total = 0.50
+        assert res.edit_rate == pytest.approx(0.50)
+        assert res.modification_rate == pytest.approx(0.50)
+
+        # Verifier-based CSR = 1 verified / 2 total contradicted = 0.50
+        assert res.csr == pytest.approx(0.50)
+
+        # Ground-truth CSR = 1 matched gold / 2 total contradicted = 0.50
+        assert res.ground_truth_csr == pytest.approx(0.50)
+        assert res.is_verifier_based_evaluation is False
+

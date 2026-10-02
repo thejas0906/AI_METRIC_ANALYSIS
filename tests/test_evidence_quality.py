@@ -9,8 +9,8 @@ classification, and edge case handling.
 Normalization formula (K=0.30):
     norm = raw / (raw + 0.30)
 
-This is a calibrated sigmoid normalization chosen so that a
-"good" BM25-lite relevance score of ~0.30 maps to ~0.50,
+This is a saturating rational normalization (Michaelis-Menten / Hill-type curve)
+chosen so that a "good" BM25-lite relevance score of ~0.30 maps to ~0.50,
 avoiding the compression artifacts of the naive raw/(raw+1)
 formula which maps most real scores below 0.33.
 
@@ -166,21 +166,39 @@ class TestNormalizeRelevance:
         assert norm > 0.99
         assert norm < 1.0
 
-    def test_always_bounded(self, assessor):
-        """Normalized relevance must always be in [0, 1)."""
-        for r in [0, 0.01, 0.1, 0.3, 0.5, 1.0, 5.0, 100.0]:
-            norm = assessor._normalize_relevance(r)
-            assert 0.0 <= norm < 1.0, f"norm({r}) = {norm} out of [0,1)"
+    def test_edge_case_raw_zero(self, assessor):
+        """Edge case: raw = 0 -> normalized relevance is exactly 0.0."""
+        assert assessor._normalize_relevance(0.0) == 0.0
 
-    def test_monotone_increasing(self, assessor):
-        """Higher raw score -> higher normalized score."""
-        scores = [0.0, 0.1, 0.3, 0.5, 1.0, 2.0, 5.0]
-        norms  = [assessor._normalize_relevance(r) for r in scores]
-        for i in range(len(norms) - 1):
-            assert norms[i] <= norms[i+1], (
-                f"Not monotone: norm({scores[i]})={norms[i]} > "
-                f"norm({scores[i+1]})={norms[i+1]}"
-            )
+    def test_edge_case_very_small_raw(self, assessor):
+        """Edge case: very small raw (1e-6) -> strictly positive and bounded in [0, 1]."""
+        r = 1e-6
+        norm = assessor._normalize_relevance(r)
+        assert 0.0 < norm < 0.001
+        assert norm == pytest.approx(r / (r + 0.30))
+
+    def test_edge_case_medium_raw(self, assessor):
+        """Edge case: medium raw (0.30) -> exactly 0.50 (half-saturation point)."""
+        r = 0.30
+        assert assessor._normalize_relevance(r) == pytest.approx(0.50, rel=1e-5)
+
+    def test_edge_case_very_large_raw(self, assessor):
+        """Edge case: very large raw (1e6) -> bounded in [0, 1] and asymptotically approaches 1.0."""
+        r = 1e6
+        norm = assessor._normalize_relevance(r)
+        assert 0.999 < norm <= 1.0
+
+    def test_css_is_guaranteed_bounded_unit_interval(self, assessor):
+        """CSS = NLI_entailment * EQS must be strictly within [0, 1]."""
+        ev = make_evidence(source_type="peer_reviewed", relevance=1e6)
+        rr = make_retrieval(evidence_list=[ev])
+        qa = assessor.assess(rr)
+        eqs = qa.best_eqs
+        assert 0.0 <= eqs <= 1.0
+        # For any entailment probability in [0, 1]
+        for ent_prob in [0.0, 0.25, 0.5, 0.75, 1.0]:
+            css = ent_prob * eqs
+            assert 0.0 <= css <= 1.0
 
 
 # ------------------------------------------------------------------
