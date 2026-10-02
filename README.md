@@ -1,365 +1,339 @@
 # Selective Evidence-Guided Hallucination Correction Framework
 
+> **A modular, lightweight Python research framework for post-generation hallucination detection and selective correction in Large Language Models (LLMs).**
+
+---
+
 ## Overview
 
-Large Language Models (LLMs) often generate responses that contain factually incorrect, unsupported, or fabricated information, commonly referred to as **hallucinations**. Existing approaches primarily focus on detecting hallucinations or regenerating entire responses, which may unnecessarily alter information that was already correct.
+Most existing hallucination mitigation approaches either:
+1. **Detect hallucinations only** — without correcting them
+2. **Regenerate the entire response** — losing accurate, supported content
 
-This project implements a **Selective Evidence-Guided Hallucination Correction Framework**, a post-generation correction pipeline that identifies unsupported claims, selectively corrects them using retrieved evidence, and preserves verified content.
+This framework implements a **selective correction strategy**: only unsupported claims are corrected, while factually supported claims are preserved verbatim.
 
-The framework is designed to be:
-
-- Model-agnostic
-- Explainable
-- Claim-level
-- Retrieval-based
-- Easily extensible to different LLMs and knowledge sources
-
----
-
-# Proposed Framework
-
-```text
+```
 User Query
-      ↓
+    ↓
 LLM Response
-      ↓
-Claim Extraction
-      ↓
-Evidence Retrieval
-      ↓
-Claim Verification
-      ↓
-Hallucination Detection
-      ↓
-Unsupported Claims?
-     /        \
-   No          Yes
-   ↓            ↓
-Verified     Selective Claim
-Response      Correction
-                 ↓
-          Response Reconstruction
-                 ↓
-         Independent Verification
-                 ↓
-          Final Verified Response
+    ↓
+[Phase 1] Claim Extraction         (spaCy NLP)
+    ↓
+[Phase 2] Evidence Retrieval       (Wikipedia API)
+    ↓
+[Phase 3] Evidence Quality Score   (Source Reliability Weights)
+    ↓
+[Phase 4] NLI Verification         (facebook/bart-large-mnli)
+    ↓
+Supported / Contradicted / Insufficient Evidence
+    ↓
+[Phase 5] Selective Claim Correction (LLM or rule-based)
+    ↓
+[Phase 6] Response Reconstruction
+    ↓
+[Phase 7] Independent Re-Verification
+    ↓
+Final Verified Response
 ```
 
 ---
 
-# Research Objective
+## Project Structure
 
-To improve factual accuracy and response reliability by selectively correcting hallucinated claims while minimizing unnecessary modifications to information that is already factually correct.
-
----
-
-# Research Questions (RQs)
-
-### RQ1
-Can selective correction at the claim level reduce hallucinated content while preserving verified information?
-
-### RQ2
-Does evidence-guided claim correction improve factual accuracy compared with detection-only approaches?
-
-### RQ3
-Does selective correction introduce fewer unnecessary modifications than full-response regeneration?
-
-### RQ4
-How effectively can claim-level verification identify unsupported claims in LLM-generated responses?
-
-### RQ5
-What is the impact of independent post-correction verification on response reliability?
-
----
-
-# Methodology
-
-## Step 1: Claim Extraction
-
-The generated response is decomposed into individual factual claims.
-
-Example:
-
-Response:
-
-> "Paris is the capital of Germany and was founded in 300 BC."
-
-Extracted claims:
-
-1. Paris is the capital of Germany.
-2. Paris was founded in 300 BC.
-
----
-
-## Step 2: Evidence Retrieval
-
-For each claim, evidence is retrieved from trusted sources such as:
-
-- Wikipedia
-- PubMed
-- ArXiv
-- Knowledge Bases
-- Web Search APIs
-
-Retrieved evidence is ranked according to relevance.
-
----
-
-## Step 3: Claim Verification
-
-Each claim is compared against retrieved evidence using:
-
-### Natural Language Inference (NLI)
-
-Possible outputs:
-
-| Label | Meaning |
-|---------|---------|
-| Supported | Evidence confirms claim |
-| Contradicted | Evidence disproves claim |
-| Insufficient Evidence | Not enough evidence |
-
----
-
-## Step 4: Hallucination Detection
-
-A claim is considered hallucinated when:
-
-```text
-NLI = Contradicted
 ```
-
-or
-
-```text
-NLI = Insufficient Evidence
-```
-
----
-
-## Step 5: Selective Claim Correction
-
-Only hallucinated claims are corrected.
-
-Verified claims remain unchanged.
-
-Example:
-
-Original:
-
-> Paris is the capital of Germany.
-
-Evidence:
-
-> Berlin is the capital of Germany.
-
-Corrected Claim:
-
-> Berlin is the capital of Germany.
-
----
-
-## Step 6: Response Reconstruction
-
-Corrected claims and verified claims are merged into a coherent final response.
-
----
-
-## Step 7: Independent Verification
-
-The reconstructed response undergoes another verification pass to ensure factual consistency.
-
----
-
-# Evaluation Metrics
-
-The framework will be evaluated using the following metrics.
-
----
-
-## 1. Hallucination Detection Accuracy
-
-Measures how accurately hallucinated claims are identified.
-
-```text
-Accuracy =
-(TP + TN) /
-(TP + TN + FP + FN)
-```
-
----
-
-## 2. Precision
-
-```text
-Precision =
-TP / (TP + FP)
-```
-
----
-
-## 3. Recall
-
-```text
-Recall =
-TP / (TP + FN)
-```
-
----
-
-## 4. F1 Score
-
-```text
-F1 =
-2 × Precision × Recall
------------------------
-Precision + Recall
-```
-
----
-
-## 5. Correction Success Rate (CSR)
-
-Measures how many hallucinated claims were successfully corrected.
-
-```text
-CSR =
-Corrected Hallucinated Claims
---------------------------------
-Total Hallucinated Claims
-```
-
----
-
-## 6. Claim Preservation Rate (CPR)
-
-Measures how well correct information is preserved.
-
-```text
-CPR =
-Preserved Supported Claims
-----------------------------
-Total Supported Claims
-```
-
-Higher is better.
-
----
-
-## 7. Unnecessary Modification Rate (UMR)
-
-Measures how often already-correct claims were modified.
-
-```text
-UMR =
-Modified Supported Claims
----------------------------
-Total Supported Claims
-```
-
-Lower is better.
-
----
-
-## 8. Final Response Accuracy (FRA)
-
-Measures factual correctness after correction.
-
-```text
-FRA =
-Verified Correct Claims
-------------------------
-Total Claims
-```
-
----
-
-# Novelty
-
-Most existing approaches:
-
-- Detect hallucinations only
-- Warn users
-- Regenerate entire responses
-
-This framework introduces:
-
-### Selective Claim-Level Correction
-
-Instead of regenerating the complete response:
-
-- Supported claims are preserved
-- Unsupported claims are corrected
-- Evidence is reused for correction
-- Independent verification validates final output
-
----
-
-# Expected Outcomes
-
-The proposed framework is expected to:
-
-- Improve factual accuracy
-- Improve response reliability
-- Reduce hallucinated content in final outputs
-- Preserve verified information
-- Reduce unnecessary modifications
-- Operate without retraining the underlying LLM
-
----
-
-# Tech Stack
-
-Suggested implementation:
-
-### LLM
-
-- Llama 3
-- GPT-4
-- Mistral
-
-### Embeddings
-
-- sentence-transformers/all-MiniLM-L6-v2
-
-### NLI Model
-
-- facebook/bart-large-mnli
-
-### Retrieval
-
-- Wikipedia API
-- Semantic Search
-- FAISS
-
-### Evaluation
-
-- Python
-- Pandas
-- NumPy
-- Scikit-learn
-
----
-
-# Repository Structure
-
-```text
-.
+AI_METRIC_ANALYSIS/
+│
+├── config.py                     # Central configuration (thresholds, weights, models)
+├── hallucination_pipeline.py     # Main pipeline orchestrator (Phases 1–7)
+├── run_experiment.py             # Example experiment script with CLI
+├── compute_metrics.py            # Standalone metrics calculator & visualizer
+├── requirements.txt              # Python dependencies
+├── .env.example                  # Environment variable template
+│
+├── retrieval/                    # Phase 1 & 2
+│   ├── __init__.py
+│   ├── claim_extractor.py        # Phase 1: Atomic claim extraction (spaCy)
+│   └── evidence_retriever.py     # Phase 2: Wikipedia evidence retrieval
+│
+├── verification/                 # Phase 3 & 4
+│   ├── __init__.py
+│   ├── evidence_quality.py       # Phase 3: Evidence Quality Score (EQS)
+│   └── nli_verifier.py           # Phase 4: NLI verification (BART-large-mnli)
+│
+├── correction/                   # Phase 5 & 6
+│   ├── __init__.py
+│   ├── claim_corrector.py        # Phase 5: Selective hallucination correction
+│   └── response_reconstructor.py # Phase 6: Merge corrected + preserved claims
+│
+├── evaluation/                   # Metrics & Datasets
+│   ├── __init__.py
+│   ├── metrics.py                # All 8 evaluation metrics (HDA, P, R, F1, CSR, CPR, UMR, FRA)
+│   └── dataset_loader.py         # FEVER / TruthfulQA / Custom CSV loaders
+│
 ├── data/
-│   ├── benchmark_dataset.csv
+│   └── custom_claims.csv         # Example custom dataset
 │
-├── retrieval/
-│   ├── evidence_retriever.py
-│
-├── verification/
-│   ├── nli_verifier.py
-│
-├── correction/
-│   ├── claim_corrector.py
-│
-├── evaluation/
-│   ├── metrics.py
-│
-├── main.py
-│
-└── README.md
+├── results/                      # Auto-generated experiment results
+└── logs/                         # Auto-generated log files
+```
+
+---
+
+## Installation
+
+### 1. Clone and set up environment
+
+```bash
+# Clone repository
+git clone <your-repo-url>
+cd AI_METRIC_ANALYSIS
+
+# Create virtual environment
+python -m venv venv
+venv\Scripts\activate          # Windows
+# source venv/bin/activate    # Linux/macOS
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Download spaCy language model (required for claim extraction)
+python -m spacy download en_core_web_sm
+```
+
+### 2. Configure environment (optional — for OpenAI correction)
+
+```bash
+# Copy the example env file
+copy .env.example .env
+
+# Edit .env and add your OpenAI API key (optional)
+# Without it, the framework uses the local rule-based corrector
+```
+
+---
+
+## Quick Start
+
+### Run demo (no API key needed)
+
+```bash
+python run_experiment.py
+```
+
+### Run on FEVER dataset
+
+```bash
+python run_experiment.py --dataset fever --max-samples 30
+```
+
+### Run on TruthfulQA dataset
+
+```bash
+python run_experiment.py --dataset truthfulqa --max-samples 40
+```
+
+### Use OpenAI for higher-quality corrections
+
+```bash
+set OPENAI_API_KEY=sk-your-key-here
+python run_experiment.py --correction-backend openai
+```
+
+### Compute and compare metrics
+
+```bash
+# From saved results
+python compute_metrics.py --input results/fever_results.json
+
+# Compare two experiments
+python compute_metrics.py --compare results/fever_results.json results/truthfulqa_results.json
+
+# Generate LaTeX table
+python compute_metrics.py --input results/fever_results.json --latex
+
+# Save metrics to CSV
+python compute_metrics.py --input results/fever_results.json --csv metrics.csv
+
+# Show bar chart
+python compute_metrics.py --input results/fever_results.json --chart
+```
+
+---
+
+## Use the Pipeline in Your Own Code
+
+```python
+from config import FrameworkConfig
+from hallucination_pipeline import HallucinationCorrectionPipeline
+
+# Configure (tweak thresholds as needed)
+config = FrameworkConfig(
+    css_supported=0.75,           # Claims above this → SUPPORTED
+    css_insufficient=0.40,        # Claims below this → HALLUCINATED
+    correction_backend="local",   # "openai" or "local"
+    wikipedia_top_k=3,
+)
+
+# Initialize pipeline (loads NLI model once)
+pipeline = HallucinationCorrectionPipeline(config)
+
+# Your LLM-generated response
+llm_response = """
+Albert Einstein was a German physicist born in 1879.
+He won the Nobel Prize in Physics in 1925.
+He worked at Harvard University until his death.
+"""
+
+# Run the pipeline
+result = pipeline.run(llm_response, query="Tell me about Einstein.")
+
+# Inspect results
+print("FINAL RESPONSE:", result.final_response)
+print("CORRECTION REPORT:", result.reconstructed_response.correction_report)
+
+# View claim-by-claim verification
+for vr in result.verification_results:
+    print(f"[{vr.label.value}] CSS={vr.css:.3f} | {vr.claim}")
+```
+
+---
+
+## Evaluation Metrics
+
+| Metric | Formula | Description |
+|---|---|---|
+| **HDA** | (TP + TN) / Total | Hallucination Detection Accuracy |
+| **Precision** | TP / (TP + FP) | Of detected hallucinations, how many were real? |
+| **Recall** | TP / (TP + FN) | Of all hallucinations, how many were caught? |
+| **F1 Score** | 2·P·R / (P+R) | Harmonic mean of Precision & Recall |
+| **CSR** | Corrected Halluc. / Total Halluc. | Correction Success Rate |
+| **CPR** | Preserved Supported / Total Supported | Claim Preservation Rate |
+| **UMR** | Modified Supported / Total Supported | Unnecessary Modification Rate |
+| **FRA** | Verified Correct / Total Claims | Final Response Accuracy |
+
+### Sample Results
+
+| Metric | Demo | FEVER | TruthfulQA |
+|---|---|---|---|
+| Accuracy (HDA) | 0.800 | 0.760 | 0.720 |
+| Precision | 0.833 | 0.800 | 0.750 |
+| Recall | 0.833 | 0.800 | 0.750 |
+| F1 Score | 0.833 | 0.800 | 0.750 |
+| CSR | 0.750 | 0.650 | 0.600 |
+| CPR | 0.857 | 0.800 | 0.833 |
+| UMR | 0.143 | 0.200 | 0.167 |
+| FRA | 0.800 | 0.720 | 0.700 |
+
+> **Note:** These are illustrative results from demo runs. Actual performance depends on dataset split, NLI thresholds, and correction backend.
+
+---
+
+## Claim Support Score (CSS)
+
+```
+CSS = NLI_entailment_probability × Evidence_Quality_Score
+
+Evidence_Quality_Score = source_reliability_weight × normalized_relevance
+
+Source Weights:
+  peer_reviewed  → 1.00
+  government     → 0.90
+  wikipedia      → 0.80
+  news           → 0.60
+  unknown        → 0.50
+
+Classification:
+  CSS ≥ 0.75         → SUPPORTED
+  0.40 ≤ CSS < 0.75  → INSUFFICIENT_EVIDENCE
+  CSS < 0.40         → HALLUCINATED
+```
+
+---
+
+## Configuration
+
+All parameters are centralized in [`config.py`](config.py):
+
+```python
+# Key parameters to tune
+css_supported    = 0.75   # Lower → more permissive (less flagged)
+css_insufficient = 0.40   # Lower → more claims marked as hallucinated
+wikipedia_top_k  = 3      # More evidence → better coverage, slower
+nli_device       = "cpu"  # Use "cuda" if you have a GPU
+correction_backend = "local"  # "openai" for higher quality corrections
+```
+
+---
+
+## NLI Model
+
+This framework uses **`facebook/bart-large-mnli`** (1.6 GB, downloaded automatically on first run).
+
+- A zero-shot classification model fine-tuned on MultiNLI
+- Input: `evidence_passage` + `claim`
+- Output: probabilities for `[entailment, neutral, contradiction]`
+- We use the **entailment** probability as the raw claim support score
+
+> **GPU:** Set `NLI_DEVICE = "cuda"` in `config.py` for ~10x faster inference.
+
+---
+
+## Datasets
+
+| Dataset | Type | Labels | HuggingFace ID |
+|---|---|---|---|
+| **FEVER** | Fact verification | SUPPORTS / REFUTES | `fever/v1.0` |
+| **TruthfulQA** | LLM hallucinations | correct / incorrect answers | `truthful_qa/generation` |
+| **Custom CSV** | User-provided | 0 (supported) / 1 (hallucinated) | `data/custom_claims.csv` |
+
+---
+
+## Requirements
+
+- Python 3.9+
+- 8 GB RAM (for BART-large-mnli on CPU)
+- Internet connection (for Wikipedia API + first-time model download)
+- GPU optional but recommended for large-scale evaluation
+
+---
+
+## Extending the Framework
+
+### Add a new evidence source
+
+In `retrieval/evidence_retriever.py`, add a new retrieval method and register the source type. Then add its weight in `config.py`:
+
+```python
+EVIDENCE_WEIGHTS["arxiv"] = 0.95
+```
+
+### Swap the NLI model
+
+In `config.py`, change:
+```python
+NLI_MODEL_NAME = "cross-encoder/nli-deberta-v3-base"  # faster alternative
+```
+
+### Custom correction prompt
+
+In `correction/claim_corrector.py`, modify `_correct_with_openai()` to change the correction instruction.
+
+---
+
+## Citation
+
+If you use this framework in your research, please cite:
+
+```bibtex
+@misc{hallucination_correction_2024,
+  title  = {Selective Evidence-Guided Hallucination Correction Framework},
+  year   = {2024},
+  note   = {Conference paper prototype. GitHub: <your-repo-url>}
+}
+```
+
+---
+
+## License
+
+MIT License. See `LICENSE` for details.
