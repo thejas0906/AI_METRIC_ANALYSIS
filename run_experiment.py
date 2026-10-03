@@ -113,7 +113,7 @@ def parse_args():
     )
     parser.add_argument(
         "--dataset",
-        choices=["demo", "fever", "truthfulqa", "custom"],
+        choices=["demo", "fever", "truthfulqa", "custom", "multiclaim"],
         default="demo",
         help="Dataset to evaluate on (default: demo)",
     )
@@ -238,7 +238,10 @@ def run_dataset_evaluation(
     # Load dataset
     loader = DatasetLoader()
     try:
-        samples = loader.load(dataset_name, max_samples=max_samples)
+        if dataset_name == "multiclaim":
+            samples = loader.load_multiclaim_benchmark(max_samples=max_samples)
+        else:
+            samples = loader.load(dataset_name, max_samples=max_samples)
     except Exception as e:
         logger.warning(f"Dataset loading failed: {e}. Using fallback samples.")
         # Use offline fallback
@@ -251,25 +254,33 @@ def run_dataset_evaluation(
     print(f"\nRunning pipeline on {len(samples)} samples...")
     eval_results = pipeline.evaluate(samples, verbose=verbose)
 
-    # Print metrics
+    # Print response-level report & summary metrics
     metrics_calc = EvaluationMetrics()
+    if eval_results.get("response_reports"):
+        metrics_calc.print_response_level_report(eval_results["response_reports"])
     metrics_calc.print_report(eval_results["metrics"])
 
-    # Save results
+    # Save results with explicit ground-truth vs verifier separation
     results_data = {
         "dataset": dataset_name,
         "num_samples": len(samples),
-        "metrics": {
-            "accuracy":  eval_results["metrics"].accuracy,
-            "precision": eval_results["metrics"].precision,
-            "recall":    eval_results["metrics"].recall,
-            "f1_score":  eval_results["metrics"].f1_score,
-            "csr":       eval_results["metrics"].csr,
-            "cpr":       eval_results["metrics"].cpr,
-            "umr":       eval_results["metrics"].umr,
-            "fra":       eval_results["metrics"].fra,
-        },
+        "metrics": eval_results["metrics"].to_dict(),
+        "response_reports": eval_results.get("response_reports", []),
         "per_claim_results": eval_results["pipeline_outputs"],
+        "correction_outcomes": [
+            {
+                "claim": o.claim,
+                "ground_truth": o.ground_truth_label,
+                "predicted": o.predicted_label,
+                "was_corrected": o.was_corrected,
+                "post_correction_verified": o.post_correction_verified,
+                "was_preserved": o.was_preserved,
+                "gold_label": o.gold_label,
+                "gold_correction": o.gold_correction,
+                "is_ground_truth_correct": o.is_ground_truth_correct,
+            }
+            for o in eval_results.get("correction_outcomes", [])
+        ],
     }
 
     filename = f"{dataset_name}_results.json"

@@ -1,0 +1,618 @@
+[
+  {
+    "response_id": "resp_001",
+    "domain": "Biography",
+    "question": "Tell me about Albert Einstein's education and Nobel Prize.",
+    "response": "Albert Einstein was born in 1879 in Ulm, Germany. He worked as a patent clerk at the Swiss Federal Patent Office in Bern. Einstein was awarded the Nobel Prize in Literature in 1921. He later accepted a faculty position at the Institute for Advanced Study in Princeton.",
+    "gold_claims": [
+      {
+        "claim_text": "Albert Einstein was born in 1879 in Ulm, Germany.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "He worked as a patent clerk at the Swiss Federal Patent Office in Bern.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Einstein was awarded the Nobel Prize in Literature in 1921.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "Einstein was awarded the Nobel Prize in Physics in 1921."
+      },
+      {
+        "claim_text": "He later accepted a faculty position at the Institute for Advanced Study in Princeton.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      }
+    ]
+  },
+  {
+    "response_id": "resp_002",
+    "domain": "Biography",
+    "question": "Summarize the academic career and achievements of Marie Curie.",
+    "response": "Marie Curie was born in Warsaw, Poland in 1867. She was the first person to win two Nobel Prizes in different scientific fields. She served as the first female physics professor at Harvard University. Her personal laboratory papers and notebooks remain radioactive to this day.",
+    "gold_claims": [
+      {
+        "claim_text": "Marie Curie was born in Warsaw, Poland in 1867.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "She was the first person to win two Nobel Prizes in different scientific fields.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "She served as the first female physics professor at Harvard University.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "She served as the first female professor at the University of Paris (Sorbonne)."
+      },
+      {
+        "claim_text": "Her personal laboratory papers and notebooks remain radioactive to this day.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      }
+    ]
+  },
+  {
+    "response_id": "resp_003",
+    "domain": "Biography",
+    "question": "What were the major scientific contributions of Isaac Newton?",
+    "response": "Isaac Newton was an English mathematician and physicist born in Woolsthorpe. He published the Philosophiæ Naturalis Principia Mathematica in 1687. Newton formulated the classical laws of motion and universal gravitation. In 1705, Newton discovered the planet Pluto.",
+    "gold_claims": [
+      {
+        "claim_text": "Isaac Newton was an English mathematician and physicist born in Woolsthorpe.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "He published the Philosophiæ Naturalis Principia Mathematica in 1687.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Newton formulated the classical laws of motion and universal gravitation.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "In 1705, Newton discovered the planet Pluto.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "The planet Pluto was discovered in 1930 by Clyde Tombaugh."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_004",
+    "domain": "Biography",
+    "question": "Who was Charles Darwin and what did he discover?",
+    "response": "Charles Darwin was an English naturalist who established the theory of evolution by natural selection. He embarked on a five-year voyage on the survey ship HMS Beagle. In 1859, Darwin published his foundational book On the Origin of Species. Darwin was awarded the Nobel Prize in Physiology in 1890.",
+    "gold_claims": [
+      {
+        "claim_text": "Charles Darwin was an English naturalist who established the theory of evolution by natural selection.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "He embarked on a five-year voyage on the survey ship HMS Beagle.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "In 1859, Darwin published his foundational book On the Origin of Species.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Darwin was awarded the Nobel Prize in Physiology in 1890.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "The Nobel Prizes were not established until 1901, after Darwin's death in 1882."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_005",
+    "domain": "Biography",
+    "question": "What is Leonardo da Vinci known for?",
+    "response": "Leonardo da Vinci was an Italian polymath of the High Renaissance. He painted the Mona Lisa and The Last Supper. Leonardo considered portrait painting to be his most intellectually sublime pursuit. He invented the modern digital electronic computer during his stay in Milan.",
+    "gold_claims": [
+      {
+        "claim_text": "Leonardo da Vinci was an Italian polymath of the High Renaissance.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "He painted the Mona Lisa and The Last Supper.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Leonardo considered portrait painting to be his most intellectually sublime pursuit.",
+        "gold_label": "UNVERIFIABLE",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "He invented the modern digital electronic computer during his stay in Milan.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "The modern digital electronic computer was developed in the 20th century."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_006",
+    "domain": "Biography",
+    "question": "Where did William Shakespeare live and what did he write?",
+    "response": "William Shakespeare was an English playwright and poet baptized in Stratford-upon-Avon. He wrote renowned tragedies including Hamlet and Macbeth. Shakespeare personally believed King Lear was his greatest theatrical achievement. He served as the British Prime Minister during the reign of Queen Elizabeth I.",
+    "gold_claims": [
+      {
+        "claim_text": "William Shakespeare was an English playwright and poet baptized in Stratford-upon-Avon.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "He wrote renowned tragedies including Hamlet and Macbeth.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Shakespeare personally believed King Lear was his greatest theatrical achievement.",
+        "gold_label": "UNVERIFIABLE",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "He served as the British Prime Minister during the reign of Queen Elizabeth I.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "The office of British Prime Minister did not exist until the 18th century."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_007",
+    "domain": "Science",
+    "question": "Describe the key planets in the Solar System.",
+    "response": "Jupiter is the largest planet in our solar system by both mass and volume. Earth is the third planet from the Sun and the only known astronomical object harboring life. Saturn is distinguished by an extensive and bright planetary ring system. The planet Mars has three large natural moons orbiting it.",
+    "gold_claims": [
+      {
+        "claim_text": "Jupiter is the largest planet in our solar system by both mass and volume.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Earth is the third planet from the Sun and the only known astronomical object harboring life.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Saturn is distinguished by an extensive and bright planetary ring system.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The planet Mars has three large natural moons orbiting it.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "The planet Mars has two small natural moons, Phobos and Deimos."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_008",
+    "domain": "Science",
+    "question": "Explain how photosynthesis functions in plants.",
+    "response": "Photosynthesis is the biochemical process by which green plants synthesize nutrients using sunlight. Chlorophyll is the primary pigment responsible for absorbing light energy. During photosynthesis, plants absorb large quantities of oxygen gas as their primary metabolic fuel. The light-dependent reactions of photosynthesis occur within cellular chloroplasts.",
+    "gold_claims": [
+      {
+        "claim_text": "Photosynthesis is the biochemical process by which green plants synthesize nutrients using sunlight.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Chlorophyll is the primary pigment responsible for absorbing light energy.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "During photosynthesis, plants absorb large quantities of oxygen gas as their primary metabolic fuel.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "During photosynthesis, plants absorb carbon dioxide and release oxygen as a byproduct."
+      },
+      {
+        "claim_text": "The light-dependent reactions of photosynthesis occur within cellular chloroplasts.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      }
+    ]
+  },
+  {
+    "response_id": "resp_009",
+    "domain": "Science",
+    "question": "How does the human heart and blood circulation work?",
+    "response": "The human heart functions as a muscular organ that pumps blood throughout the body. Red blood cells use hemoglobin protein molecules to transport oxygen to tissues. Arteries are blood vessels that carry oxygenated blood away from the heart. The human heart contains six distinct pumping ventricles.",
+    "gold_claims": [
+      {
+        "claim_text": "The human heart functions as a muscular organ that pumps blood throughout the body.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Red blood cells use hemoglobin protein molecules to transport oxygen to tissues.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Arteries are blood vessels that carry oxygenated blood away from the heart.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The human heart contains six distinct pumping ventricles.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "The human heart contains two ventricles and two atria, for a total of four chambers."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_010",
+    "domain": "Science",
+    "question": "What is water composed of and how are elements organized?",
+    "response": "Dmitri Mendeleev formulated the periodic law and published the first widely accepted periodic table. The chemical symbol for elemental gold is Au. Water is an indivisible elementary substance that cannot be chemically decomposed. Water at standard atmospheric pressure freezes at zero degrees Celsius.",
+    "gold_claims": [
+      {
+        "claim_text": "Dmitri Mendeleev formulated the periodic law and published the first widely accepted periodic table.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The chemical symbol for elemental gold is Au.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Water is an indivisible elementary substance that cannot be chemically decomposed.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "Water is a chemical compound composed of two hydrogen atoms and one oxygen atom."
+      },
+      {
+        "claim_text": "Water at standard atmospheric pressure freezes at zero degrees Celsius.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      }
+    ]
+  },
+  {
+    "response_id": "resp_011",
+    "domain": "Science",
+    "question": "What is DNA and how was its structure discovered?",
+    "response": "DNA carries genetic instructions utilized in the growth and reproduction of living organisms. James Watson and Francis Crick identified the double-helix structure of DNA in 1953. DNA molecular chains consist of four chemical bases: adenine, guanine, cytosine, and thymine. The genomic DNA sequence is identical across all individual human beings.",
+    "gold_claims": [
+      {
+        "claim_text": "DNA carries genetic instructions utilized in the growth and reproduction of living organisms.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "James Watson and Francis Crick identified the double-helix structure of DNA in 1953.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "DNA molecular chains consist of four chemical bases: adenine, guanine, cytosine, and thymine.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The genomic DNA sequence is identical across all individual human beings.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "Genetic variation and polymorphisms exist across individual human genomes."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_012",
+    "domain": "Science",
+    "question": "What is the speed of light in modern physics?",
+    "response": "The speed of light in a vacuum is defined as exactly 299,792,458 meters per second. According to special relativity, the speed of light in vacuum is constant across all inertial frames. Photons are massless elementary particles that mediate the electromagnetic force. Light waves travel substantially faster through liquid water than through empty vacuum space.",
+    "gold_claims": [
+      {
+        "claim_text": "The speed of light in a vacuum is defined as exactly 299,792,458 meters per second.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "According to special relativity, the speed of light in vacuum is constant across all inertial frames.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Photons are massless elementary particles that mediate the electromagnetic force.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Light waves travel substantially faster through liquid water than through empty vacuum space.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "Light travels slower in liquid water than in a vacuum due to the refractive index of water."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_013",
+    "domain": "History",
+    "question": "Describe the Apollo 11 lunar mission.",
+    "response": "Apollo 11 was the spaceflight that first landed humans on the Moon in July 1969. American astronaut Neil Armstrong became the first human to step onto the lunar surface. The Apollo 11 spacecraft was built and launched by the Soviet Union space program. Astronauts Neil Armstrong and Buzz Aldrin spent several hours exploring the lunar surface.",
+    "gold_claims": [
+      {
+        "claim_text": "Apollo 11 was the spaceflight that first landed humans on the Moon in July 1969.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "American astronaut Neil Armstrong became the first human to step onto the lunar surface.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The Apollo 11 spacecraft was built and launched by the Soviet Union space program.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "The Apollo 11 mission was conducted by the United States NASA space program."
+      },
+      {
+        "claim_text": "Astronauts Neil Armstrong and Buzz Aldrin spent several hours exploring the lunar surface.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      }
+    ]
+  },
+  {
+    "response_id": "resp_014",
+    "domain": "History",
+    "question": "When was the American Civil War fought and who was involved?",
+    "response": "The American Civil War was fought between the northern Union states and southern Confederate states. Hostilities began in April 1861 when Confederate forces attacked Fort Sumter. Abraham Lincoln served as President of the United States throughout the conflict. The American Civil War concluded with final military surrenders in 1895.",
+    "gold_claims": [
+      {
+        "claim_text": "The American Civil War was fought between the northern Union states and southern Confederate states.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Hostilities began in April 1861 when Confederate forces attacked Fort Sumter.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Abraham Lincoln served as President of the United States throughout the conflict.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The American Civil War concluded with final military surrenders in 1895.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "The American Civil War concluded in 1865."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_015",
+    "domain": "History",
+    "question": "Tell me about Julius Caesar and the Roman Empire.",
+    "response": "Julius Caesar was a Roman general and statesman who played a critical role in the demise of the Roman Republic. Caesar was assassinated by Roman senators on the Ides of March in 44 BC. Latin was the predominant administrative and literary language of ancient Rome. The Roman Colosseum was constructed in central Paris.",
+    "gold_claims": [
+      {
+        "claim_text": "Julius Caesar was a Roman general and statesman who played a critical role in the demise of the Roman Republic.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Caesar was assassinated by Roman senators on the Ides of March in 44 BC.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Latin was the predominant administrative and literary language of ancient Rome.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The Roman Colosseum was constructed in central Paris.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "The Roman Colosseum was constructed in Rome, Italy."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_016",
+    "domain": "History",
+    "question": "What sparked World War I and how did it end?",
+    "response": "World War I was triggered by the assassination of Archduke Franz Ferdinand of Austria in June 1914. The conflict involved major global coalitions known as the Allied Powers and Central Powers. The war formally ended with the signing of the Treaty of Versailles in 1919. Military forces deployed atomic nuclear weapons extensively during World War I.",
+    "gold_claims": [
+      {
+        "claim_text": "World War I was triggered by the assassination of Archduke Franz Ferdinand of Austria in June 1914.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The conflict involved major global coalitions known as the Allied Powers and Central Powers.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The war formally ended with the signing of the Treaty of Versailles in 1919.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Military forces deployed atomic nuclear weapons extensively during World War I.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "Atomic nuclear weapons were first developed and deployed in World War II in 1945."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_017",
+    "domain": "History",
+    "question": "What is the Magna Carta and why was it issued?",
+    "response": "The Magna Carta was a royal charter of rights agreed to by King John of England in 1215. The historic agreement was negotiated at Runnymede near Windsor. The charter established the principle that everyone, including the monarch, is subject to the law. The Magna Carta was originally written and drafted by George Washington.",
+    "gold_claims": [
+      {
+        "claim_text": "The Magna Carta was a royal charter of rights agreed to by King John of England in 1215.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The historic agreement was negotiated at Runnymede near Windsor.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The charter established the principle that everyone, including the monarch, is subject to the law.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The Magna Carta was originally written and drafted by George Washington.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "The Magna Carta was drafted by Archbishop Stephen Langton and rebellious English barons."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_018",
+    "domain": "Geography",
+    "question": "What are the major geographic facts about Australia?",
+    "response": "Canberra is the federal capital city of the Commonwealth of Australia. Sydney is the most populous city in Australia. Australia is an island continent surrounded entirely by the Atlantic Ocean. The Great Barrier Reef is situated off the northeastern coast of Queensland.",
+    "gold_claims": [
+      {
+        "claim_text": "Canberra is the federal capital city of the Commonwealth of Australia.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Sydney is the most populous city in Australia.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Australia is an island continent surrounded entirely by the Atlantic Ocean.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "Australia is bordered by the Indian and Pacific Oceans."
+      },
+      {
+        "claim_text": "The Great Barrier Reef is situated off the northeastern coast of Queensland.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      }
+    ]
+  },
+  {
+    "response_id": "resp_019",
+    "domain": "Geography",
+    "question": "Where is Mount Everest and who first climbed it?",
+    "response": "Mount Everest is the highest mountain peak above sea level on Earth. It is located in the Mahalangur Himal sub-range of the Himalayas on the border of Nepal and China. The summit was first officially documented as reached by Edmund Hillary and Tenzing Norgay in 1953. Mount Everest is geographically situated on the continent of Africa.",
+    "gold_claims": [
+      {
+        "claim_text": "Mount Everest is the highest mountain peak above sea level on Earth.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "It is located in the Mahalangur Himal sub-range of the Himalayas on the border of Nepal and China.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The summit was first officially documented as reached by Edmund Hillary and Tenzing Norgay in 1953.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Mount Everest is geographically situated on the continent of Africa.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "Mount Everest is located on the continent of Asia."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_020",
+    "domain": "Geography",
+    "question": "Where is the Amazon River and what are its dimensions?",
+    "response": "The Amazon River is located on the continent of South America. It is the largest river in the world by water discharge volume. The river drainage basin spans several nations including Brazil and Peru. The Amazon River flows eastward and empties directly into the Mediterranean Sea.",
+    "gold_claims": [
+      {
+        "claim_text": "The Amazon River is located on the continent of South America.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "It is the largest river in the world by water discharge volume.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The river drainage basin spans several nations including Brazil and Peru.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The Amazon River flows eastward and empties directly into the Mediterranean Sea.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "The Amazon River empties directly into the Atlantic Ocean."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_021",
+    "domain": "Geography",
+    "question": "Give an overview of the geography of Africa.",
+    "response": "The Sahara Desert in northern Africa is the largest hot desert in the world. The Nile River flows northward through northeastern Africa into the Mediterranean Sea. Mount Kilimanjaro in Tanzania is the highest mountain peak in Africa. Africa is the smallest continent on Earth by total land surface area.",
+    "gold_claims": [
+      {
+        "claim_text": "The Sahara Desert in northern Africa is the largest hot desert in the world.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The Nile River flows northward through northeastern Africa into the Mediterranean Sea.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Mount Kilimanjaro in Tanzania is the highest mountain peak in Africa.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Africa is the smallest continent on Earth by total land surface area.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "Africa is the second-largest continent on Earth; Australia is the smallest."
+      }
+    ]
+  },
+  {
+    "response_id": "resp_022",
+    "domain": "Geography",
+    "question": "What is the geography and currency of Japan?",
+    "response": "Japan is an island nation located in East Asia in the northwest Pacific Ocean. Tokyo is the capital and most populous metropolitan area of Japan. Mount Fuji is an active stratovolcano and the highest mountain in Japan. The official sovereign currency unit of Japan is the Euro.",
+    "gold_claims": [
+      {
+        "claim_text": "Japan is an island nation located in East Asia in the northwest Pacific Ocean.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Tokyo is the capital and most populous metropolitan area of Japan.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "Mount Fuji is an active stratovolcano and the highest mountain in Japan.",
+        "gold_label": "SUPPORTED",
+        "gold_correction": null
+      },
+      {
+        "claim_text": "The official sovereign currency unit of Japan is the Euro.",
+        "gold_label": "CONTRADICTED",
+        "gold_correction": "The official currency of Japan is the Japanese Yen."
+      }
+    ]
+  }
+]

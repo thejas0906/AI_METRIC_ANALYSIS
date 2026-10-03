@@ -171,3 +171,171 @@ class TestResponseReconstructor:
         assert result.final_text == expected
         assert result.final_text.startswith("The company was founded in 1990.")
         assert result.final_text.endswith("The company was founded in 2005.")
+        assert result.rps == 1.0
+
+    def test_duplicate_sentence_case_a(self):
+        """
+        Case A: Duplicate sentences separated by newline:
+        "The Earth orbits the Sun.
+        The Earth orbits the Sun."
+        Verify only targeted span changes, formatting and newline are preserved,
+        and RPS is 1.0.
+        """
+        orig = "The Earth orbits the Sun.\nThe Earth orbits the Sun."
+        # Span 0: [0, 25)
+        # Span 1: [26, 51)
+        span0 = ClaimSpan(
+            claim_id=0,
+            text="The Earth orbits the Sun.",
+            start_char=0,
+            end_char=25,
+            sentence_index=0,
+            original_text="The Earth orbits the Sun.",
+        )
+        span1 = ClaimSpan(
+            claim_id=1,
+            text="The Earth orbits the Sun.",
+            start_char=26,
+            end_char=51,
+            sentence_index=1,
+            original_text="The Earth orbits the Sun.",
+        )
+
+        cc0 = CorrectedClaim(
+            original_claim=span0.text,
+            corrected_claim=span0.text,
+            status=CorrectionStatus.PRESERVED,
+            verification_result=make_dummy_vr(span0.text, VerificationLabel.SUPPORTED),
+        )
+        cc1 = CorrectedClaim(
+            original_claim=span1.text,
+            corrected_claim="The Moon orbits the Earth.",
+            status=CorrectionStatus.CORRECTED,
+            verification_result=make_dummy_vr(span1.text, VerificationLabel.CONTRADICTED),
+        )
+
+        reconstructor = ResponseReconstructor()
+        result = reconstructor.reconstruct(
+            corrected_claims=[cc0, cc1],
+            claim_spans=[span0, span1],
+            original_response=orig,
+        )
+
+        expected = "The Earth orbits the Sun.\nThe Moon orbits the Earth."
+        assert result.final_text == expected
+        assert result.final_text.startswith("The Earth orbits the Sun.\n")
+        assert result.final_text.endswith("The Moon orbits the Earth.")
+        assert result.rps == 1.0
+
+    def test_repeated_claim_case_b(self):
+        """
+        Case B: Repeated claim text appearing multiple times in the document.
+        "London is in the UK. London is in the UK. London is in the UK."
+        Verify exact span replacement of only the targeted middle occurrence,
+        while occurrences 1 and 3 remain untouched.
+        """
+        orig = "London is in the UK. London is in the UK. London is in the UK."
+        # Span 0: [0, 20)
+        # Span 1: [21, 41)
+        # Span 2: [42, 62)
+        span0 = ClaimSpan(
+            claim_id=0,
+            text="London is in the UK.",
+            start_char=0,
+            end_char=20,
+            sentence_index=0,
+            original_text="London is in the UK.",
+        )
+        span1 = ClaimSpan(
+            claim_id=1,
+            text="London is in the UK.",
+            start_char=21,
+            end_char=41,
+            sentence_index=1,
+            original_text="London is in the UK.",
+        )
+        span2 = ClaimSpan(
+            claim_id=2,
+            text="London is in the UK.",
+            start_char=42,
+            end_char=62,
+            sentence_index=2,
+            original_text="London is in the UK.",
+        )
+
+        cc0 = CorrectedClaim(
+            original_claim=span0.text,
+            corrected_claim=span0.text,
+            status=CorrectionStatus.PRESERVED,
+            verification_result=make_dummy_vr(span0.text, VerificationLabel.SUPPORTED),
+        )
+        cc1 = CorrectedClaim(
+            original_claim=span1.text,
+            corrected_claim="London is the capital of the UK.",
+            status=CorrectionStatus.CORRECTED,
+            verification_result=make_dummy_vr(span1.text, VerificationLabel.CONTRADICTED),
+        )
+        cc2 = CorrectedClaim(
+            original_claim=span2.text,
+            corrected_claim=span2.text,
+            status=CorrectionStatus.PRESERVED,
+            verification_result=make_dummy_vr(span2.text, VerificationLabel.SUPPORTED),
+        )
+
+        reconstructor = ResponseReconstructor()
+        result = reconstructor.reconstruct(
+            corrected_claims=[cc0, cc1, cc2],
+            claim_spans=[span0, span1, span2],
+            original_response=orig,
+        )
+
+        expected = "London is in the UK. London is the capital of the UK. London is in the UK."
+        assert result.final_text == expected
+        # First occurrence is untouched
+        assert result.final_text.startswith("London is in the UK. ")
+        # Third occurrence is untouched
+        assert result.final_text.endswith(" London is in the UK.")
+        # Exact replacement of only the middle span
+        assert result.rps == 1.0
+
+    def test_rps_metric_perfect_preservation(self):
+        """
+        Verify Response Preservation Score (RPS) is exactly 1.0 when
+        all content outside the corrected span is untouched.
+        """
+        orig = "Header text. Claim one is wrong. Footer text."
+        claim = "Claim one is wrong."
+        idx = orig.index(claim)
+        end = idx + len(claim)
+        replacement = "Claim one has been corrected."
+        reconstructed = orig[:idx] + replacement + orig[end:]
+
+        rps = ResponseReconstructor.compute_rps(
+            original=orig,
+            reconstructed=reconstructed,
+            corrected_spans=[(idx, end)],
+            replacements=[(idx, end, replacement)],
+        )
+        assert rps == 1.0
+
+    def test_rps_metric_detects_outside_modification(self):
+        """
+        Verify Response Preservation Score (RPS) < 1.0 when content outside
+        the corrected span is modified (e.g. unintended truncation or edits).
+        """
+        orig = "Header text. Claim one is wrong. Footer text."
+        claim = "Claim one is wrong."
+        idx = orig.index(claim)
+        end = idx + len(claim)
+        replacement = "Claim one has been corrected."
+        # Unintended modification to "Header text" -> "Modified header"
+        tampered_reconstructed = "Modified header. " + replacement + " Footer text."
+
+        rps = ResponseReconstructor.compute_rps(
+            original=orig,
+            reconstructed=tampered_reconstructed,
+            corrected_spans=[(idx, end)],
+            replacements=[(idx, end, replacement)],
+        )
+        assert rps < 1.0
+        assert rps > 0.0

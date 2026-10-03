@@ -198,33 +198,40 @@ for vr in result.verification_results:
 
 ---
 
-## Evaluation Metrics
+## Evaluation Metrics & Metric Interpretation
+
+The framework rigorously distinguishes between **Ground-Truth Metrics** (`evaluation_type: ground_truth`) and **Internal Verifier Metrics** (`evaluation_type: internal_verifier`) to prevent self-verification bias.
+
+### Metric Interpretation
+
+> [!IMPORTANT]
+> **Ground-Truth Metrics** evaluate actual correctness against external benchmark annotations and target corrections.
+> **Verifier Metrics** evaluate internal pipeline self-consistency using the Phase-7 NLI model.
+> **Verifier metrics should NOT be interpreted as independent correctness measures**, as they measure whether the pipeline agrees with itself.
+
+### 1. Ground-Truth Metrics (`evaluation_type: ground_truth`)
+Evaluated against benchmark ground-truth labels and external gold correction targets:
 
 | Metric | Formula | Description |
 |---|---|---|
-| **HDA** | (TP + TN) / Total | Hallucination Detection Accuracy |
-| **Precision** | TP / (TP + FP) | Of detected hallucinations, how many were real? |
-| **Recall** | TP / (TP + FN) | Of all hallucinations, how many were caught? |
-| **F1 Score** | 2·P·R / (P+R) | Harmonic mean of Precision & Recall |
-| **CSR** | Corrected Halluc. / Total Halluc. | Correction Success Rate |
-| **CPR** | Preserved Supported / Total Supported | Claim Preservation Rate |
-| **UMR** | Modified Supported / Total Supported | Unnecessary Modification Rate |
-| **FRA** | Verified Correct / Total Claims | Final Response Accuracy |
+| **HDA (Accuracy)** | $(TP + TN) / N$ | Hallucination Detection Accuracy |
+| **Precision** | $TP / (TP + FP)$ | Of detected hallucinations, fraction truly wrong |
+| **Recall** | $TP / (TP + FN)$ | Of all ground-truth hallucinations, fraction caught |
+| **F1 Score** | $2 \cdot P \cdot R / (P + R)$ | Harmonic mean of Precision and Recall |
+| **CSR_GT** | $\text{Corrected}_{\text{GT\_matched}} / \text{Hallucinated}_{\text{GT}}$ | Ground Truth Correction Success Rate (matches gold correction text) |
+| **CPR_GT** | $\text{Preserved}_{\text{Supported}} / \text{Total}_{\text{Supported\_GT}}$ | Claim Preservation Rate (preserves verified facts) |
+| **UMR_GT** | $\text{Modified}_{\text{Supported}} / \text{Total}_{\text{Supported\_GT}}$ | Unnecessary Modification Rate ($UMR = 1 - CPR$) |
+| **FRA_GT** | $(\text{Preserved}_{\text{Supp}} + \text{Corrected}_{\text{GT\_matched}}) / N$ | Final Response Accuracy against Ground Truth |
 
-### Sample Results
+### 2. Internal Verifier Metrics (`evaluation_type: internal_verifier`)
+Evaluated using Phase-7 fresh-retrieval NLI verification (`facebook/bart-large-mnli`):
 
-| Metric | Demo | FEVER | TruthfulQA |
-|---|---|---|---|
-| Accuracy (HDA) | 0.800 | 0.760 | 0.720 |
-| Precision | 0.833 | 0.800 | 0.750 |
-| Recall | 0.833 | 0.800 | 0.750 |
-| F1 Score | 0.833 | 0.800 | 0.750 |
-| CSR | 0.750 | 0.650 | 0.600 |
-| CPR | 0.857 | 0.800 | 0.833 |
-| UMR | 0.143 | 0.200 | 0.167 |
-| FRA | 0.800 | 0.720 | 0.700 |
-
-> **Note:** These are illustrative results from demo runs. Actual performance depends on dataset split, NLI thresholds, and correction backend.
+| Metric | Formula | Description |
+|---|---|---|
+| **CSR_Verifier** | $\text{Accepted}_{\text{Phase7}} / \text{Total}_{\text{Corrected}}$ | Fraction of modified claims accepted by Phase-7 NLI |
+| **Acceptance Rate** | $\text{Accepted}_{\text{Phase7}} / \text{Total}_{\text{Attempts}}$ | Fraction of correction attempts accepted |
+| **Verification Pass Rate** | $\text{Passing}_{\text{Phase7}} / \text{Total}_{\text{Sent\_to\_Phase7}}$ | Pass rate for Phase-7 independent verification |
+| **FRA_Verifier** | $(\text{Preserved} + \text{Accepted}_{\text{Phase7}}) / N$ | Response accuracy as judged by the internal verifier |
 
 ---
 

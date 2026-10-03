@@ -49,7 +49,11 @@ from loguru import logger
 
 import torch
 import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+try:
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+except ImportError:
+    AutoTokenizer = None
+    AutoModelForSequenceClassification = None
 
 from config import FrameworkConfig
 from verification.evidence_quality import QualityAssessedRetrieval, ScoredEvidence
@@ -282,6 +286,12 @@ class NLIVerifier:
             self._model     = NLIVerifier._model_cache
             self._device    = self._resolve_device()
             return
+
+        if AutoTokenizer is None or AutoModelForSequenceClassification is None:
+            raise RuntimeError(
+                "transformers is required for NLIVerifier.\n"
+                "Install it with: pip install transformers"
+            )
 
         logger.info(
             f"Loading NLI model: {model_name} "

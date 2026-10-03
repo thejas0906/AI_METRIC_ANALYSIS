@@ -268,6 +268,7 @@ class HallucinationCorrectionPipeline:
             annotate=False,
             original_response=llm_response,
         )
+        result.reconstructed_response = final_reconstructed
         result.final_response = final_reconstructed.final_text
 
         elapsed = time.time() - start_time
@@ -438,11 +439,68 @@ class HallucinationCorrectionPipeline:
 
         pipeline_outputs = []
         correction_outcomes = []
+        response_reports = []
 
-        for sample in tqdm(samples, desc="Evaluating", disable=not verbose):
+        for sample_idx, sample in enumerate(tqdm(samples, desc="Evaluating", disable=not verbose)):
             response_text = getattr(sample, "response", sample.claim)
             query_text = getattr(sample, "question", getattr(sample, "context", ""))
             result = self.run(response_text, query=query_text, verbose=False)
+
+            # Resolve response ID
+            resp_id = getattr(sample, "response_id", "")
+            if not resp_id and hasattr(sample, "metadata") and isinstance(sample.metadata, dict):
+                resp_id = sample.metadata.get("response_id", "")
+            if not resp_id:
+                resp_id = f"resp_{sample_idx + 1:03d}"
+
+            # Response-level counts
+            total_claims = len(result.extracted_claims)
+            supported_count = sum(
+                1 for vr in result.verification_results
+                if vr.label == VerificationLabel.SUPPORTED
+            )
+            contradicted_count = sum(
+                1 for vr in result.verification_results
+                if vr.label == VerificationLabel.CONTRADICTED
+            )
+            unverifiable_count = sum(
+                1 for vr in result.verification_results
+                if vr.label == VerificationLabel.UNVERIFIABLE
+            )
+            corrected_count = sum(
+                1 for cc in result.corrected_claims
+                if cc.status == CorrectionStatus.CORRECTED
+            )
+            preserved_count = sum(
+                1 for cc in result.corrected_claims
+                if cc.status == CorrectionStatus.PRESERVED
+            )
+            failed_count = sum(
+                1 for cc in result.corrected_claims
+                if cc.status in (CorrectionStatus.FAILED, CorrectionStatus.FINAL_VERIFICATION_FAILED)
+            )
+
+            # Calculate response-level CPR, UMR, RPS
+            cpr = (preserved_count / supported_count) if supported_count > 0 else 1.0
+            umr = (1.0 - cpr) if supported_count > 0 else 0.0
+            rps = getattr(result.reconstructed_response, "rps", 1.0) if result.reconstructed_response else 1.0
+
+            response_reports.append({
+                "response_id":          resp_id,
+                "query":                query_text,
+                "total_claims":         total_claims,
+                "supported_claims":     supported_count,
+                "contradicted_claims":  contradicted_count,
+                "unverifiable_claims":  unverifiable_count,
+                "corrected_claims":     corrected_count,
+                "preserved_claims":     preserved_count,
+                "failed_corrections":   failed_count,
+                "cpr":                  cpr,
+                "umr":                  umr,
+                "rps":                  rps,
+                "original_response":    response_text,
+                "final_response":       result.final_response,
+            })
 
             gold_claims = getattr(sample, "gold_claims", None)
             if gold_claims:
@@ -490,10 +548,9 @@ class HallucinationCorrectionPipeline:
 
                     is_gt_correct = None
                     if matched_gold and matched_gold.gold_correction and cc:
-                        is_gt_correct = (
-                            cc.corrected_claim.strip().lower()
-                            == matched_gold.gold_correction.strip().lower()
-                        )
+                        cand = cc.corrected_claim.strip().lower().rstrip(".")
+                        tgt = matched_gold.gold_correction.strip().lower().rstrip(".")
+                        is_gt_correct = (cand == tgt) or (tgt in cand) or (cand in tgt)
 
                     outcome = CorrectionOutcome(
                         claim=span.text,
@@ -559,21 +616,30 @@ class HallucinationCorrectionPipeline:
                     correction_outcomes.append(outcome)
 
             pipeline_outputs.append({
+                "response_id":       resp_id,
                 "original_response": response_text,
                 "final_response":    result.final_response,
                 "claims_extracted":  result.extracted_claims,
-                "corrected_count":   len([c for c in result.corrected_claims if c.status == CorrectionStatus.CORRECTED]),
-                "preserved_count":   len([c for c in result.corrected_claims if c.status == CorrectionStatus.PRESERVED]),
+                "supported_count":   supported_count,
+                "contradicted_count": contradicted_count,
+                "unverifiable_count": unverifiable_count,
+                "corrected_count":   corrected_count,
+                "preserved_count":   preserved_count,
+                "failed_count":      failed_count,
             })
 
         metrics_calculator = EvaluationMetrics()
         ground_truth = [o.ground_truth_label for o in correction_outcomes]
         predictions  = [o.predicted_label    for o in correction_outcomes]
-        metrics = metrics_calculator.compute(ground_truth, predictions, correction_outcomes)
+        metrics = metrics_calculator.compute(
+            ground_truth, predictions, correction_outcomes, response_reports=response_reports
+        )
 
         return {
-            "metrics":          metrics,
-            "pipeline_outputs": pipeline_outputs,
+            "metrics":             metrics,
+            "pipeline_outputs":    pipeline_outputs,
+            "response_reports":    response_reports,
+            "correction_outcomes": correction_outcomes,
         }
 
     # ------------------------------------------------------------------

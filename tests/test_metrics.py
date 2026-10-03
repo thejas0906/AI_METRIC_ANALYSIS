@@ -337,3 +337,87 @@ class TestEdgeCases:
         assert res.ground_truth_csr == pytest.approx(0.50)
         assert res.is_verifier_based_evaluation is False
 
+
+class TestMetricSeparation:
+    """Audit #4 Tests: Verify strict separation between Ground-Truth and Verifier metrics."""
+
+    def test_csr_gt_vs_csr_verifier_distinct(self):
+        """
+        Verify that CSR_GT and CSR_Verifier evaluate distinct quantities:
+        - 2 hallucinated claims:
+          - Claim 1: Corrected, verified by Phase 7 NLI (Post-verified=True), but did NOT match gold correction (is_ground_truth_correct=False)
+          - Claim 2: Corrected, NOT verified by Phase 7 NLI (Post-verified=False), but DID match gold correction (is_ground_truth_correct=True)
+        Total Hallucinated = 2
+        Total Corrected = 2
+        CSR_GT = 1 / 2 = 0.50 (Evaluates gold target match only)
+        CSR_Verifier = 1 / 2 = 0.50 (Evaluates Phase 7 NLI acceptance only)
+        Acceptance Rate = 1 / 2 = 0.50
+        """
+        outcomes = [
+            CorrectionOutcome(
+                claim="c1", ground_truth_label=True, predicted_label=True,
+                was_corrected=True, post_correction_verified=True, was_preserved=False,
+                original_was_supported=False, gold_label="CONTRADICTED",
+                gold_correction="Correct target 1", is_ground_truth_correct=False,
+            ),
+            CorrectionOutcome(
+                claim="c2", ground_truth_label=True, predicted_label=True,
+                was_corrected=True, post_correction_verified=False, was_preserved=False,
+                original_was_supported=False, gold_label="CONTRADICTED",
+                gold_correction="Correct target 2", is_ground_truth_correct=True,
+            ),
+            CorrectionOutcome(
+                claim="c3", ground_truth_label=False, predicted_label=False,
+                was_corrected=False, post_correction_verified=False, was_preserved=True,
+                original_was_supported=True, gold_label="SUPPORTED",
+            ),
+        ]
+        calc = EvaluationMetrics()
+        gt = [o.ground_truth_label for o in outcomes]
+        pred = [o.predicted_label for o in outcomes]
+        res = calc.compute(gt, pred, outcomes)
+
+        assert res.csr_gt == pytest.approx(0.50)
+        assert res.csr_verifier == pytest.approx(0.50)
+        assert res.cpr_gt == pytest.approx(1.0)
+        assert res.umr_gt == pytest.approx(0.0)
+        # FRA_GT = (1 preserved supported + 1 gt correct) / 3 = 2/3
+        assert res.fra_gt == pytest.approx(2 / 3)
+        # FRA_Verifier = (1 preserved + 1 post_verified) / 3 = 2/3
+        assert res.fra_verifier == pytest.approx(2 / 3)
+
+    def test_no_gold_corrections_csr_gt_is_none(self):
+        """When a dataset has no gold corrections, CSR_GT must be None rather than disguised verifier."""
+        outcomes = [
+            CorrectionOutcome(
+                claim="c1", ground_truth_label=True, predicted_label=True,
+                was_corrected=True, post_correction_verified=True, was_preserved=False,
+            ),
+            CorrectionOutcome(
+                claim="c2", ground_truth_label=False, predicted_label=False,
+                was_corrected=False, post_correction_verified=False, was_preserved=True,
+            ),
+        ]
+        calc = EvaluationMetrics()
+        gt = [o.ground_truth_label for o in outcomes]
+        pred = [o.predicted_label for o in outcomes]
+        res = calc.compute(gt, pred, outcomes)
+
+        assert res.csr_gt is None
+        assert res.fra_gt is None
+        assert res.csr_verifier == pytest.approx(1.0)
+        assert res.is_verifier_based_evaluation is True
+
+    def test_metadata_contains_circularity_warning(self):
+        """to_dict() must contain explicit evaluation_type and circularity warning."""
+        calc = EvaluationMetrics()
+        res = calc.compute([True, False], [True, False])
+        d = res.to_dict()
+
+        assert "ground_truth_metrics" in d
+        assert d["ground_truth_metrics"]["evaluation_type"] == "ground_truth"
+        assert "verifier_metrics" in d
+        assert d["verifier_metrics"]["evaluation_type"] == "internal_verifier"
+        assert "warning" in d["verifier_metrics"]
+
+

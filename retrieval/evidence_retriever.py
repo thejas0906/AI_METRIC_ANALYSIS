@@ -43,8 +43,15 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 from loguru import logger
 
-import wikipediaapi
-import spacy
+try:
+    import wikipediaapi
+except ImportError:
+    wikipediaapi = None
+
+try:
+    import spacy
+except ImportError:
+    spacy = None
 
 from config import FrameworkConfig, EVIDENCE_WEIGHTS
 from retrieval.models import EvidenceItem, RetrievalResult
@@ -82,6 +89,12 @@ class EvidenceRetriever:
         """
         self.config = config or FrameworkConfig()
 
+        if wikipediaapi is None:
+            raise RuntimeError(
+                "wikipedia-api is required for EvidenceRetriever.\n"
+                "Install it with: pip install wikipedia-api"
+            )
+
         # Wikipedia-API client (requires user agent per API policy)
         user_agent = getattr(
             self.config,
@@ -93,6 +106,12 @@ class EvidenceRetriever:
             language=getattr(self.config, "wikipedia_language", "en"),
             extract_format=wikipediaapi.ExtractFormat.WIKI,
         )
+
+        if spacy is None:
+            raise RuntimeError(
+                "spaCy is required for EvidenceRetriever.\n"
+                "Install it with: pip install spacy && python -m spacy download en_core_web_sm"
+            )
 
         # Load spaCy for keyword/entity extraction from claims
         logger.info(f"Loading spaCy model for keyword extraction: {self.config.spacy_model}")

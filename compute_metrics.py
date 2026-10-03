@@ -122,17 +122,31 @@ def load_and_compute(json_path: str) -> MetricsResult:
     # Handle both flat list and nested format
     if isinstance(data, list):
         pipeline_outputs = data
+    elif "correction_outcomes" in data and data["correction_outcomes"]:
+        calc = EvaluationMetrics()
+        return calc.compute_from_pipeline_output(data["correction_outcomes"])
     elif "per_claim_results" in data:
         pipeline_outputs = data["per_claim_results"]
     elif "metrics" in data and "per_claim_results" not in data:
         # Already computed metrics — reconstruct MetricsResult
         logger.info("Found pre-computed metrics in JSON.")
         m = data["metrics"]
+        gt_m = m.get("ground_truth_metrics", {})
+        ver_m = m.get("verifier_metrics", {})
         return MetricsResult(
-            accuracy=m.get("accuracy", 0),
-            precision=m.get("precision", 0),
-            recall=m.get("recall", 0),
-            f1_score=m.get("f1_score", 0),
+            accuracy=gt_m.get("accuracy", m.get("accuracy", 0)),
+            precision=gt_m.get("precision", m.get("precision", 0)),
+            recall=gt_m.get("recall", m.get("recall", 0)),
+            f1_score=gt_m.get("f1_score", m.get("f1_score", 0)),
+            csr_gt=gt_m.get("csr_gt", m.get("csr_gt")),
+            cpr_gt=gt_m.get("cpr_gt", m.get("cpr_gt", m.get("cpr", 0))),
+            umr_gt=gt_m.get("umr_gt", m.get("umr_gt", m.get("umr", 0))),
+            fra_gt=gt_m.get("fra_gt", m.get("fra_gt")),
+            rps=gt_m.get("rps", m.get("rps", 1.0)),
+            csr_verifier=ver_m.get("csr_verifier", m.get("csr_verifier", 0)),
+            acceptance_rate=ver_m.get("acceptance_rate", m.get("acceptance_rate", 0)),
+            verification_pass_rate=ver_m.get("verification_pass_rate", m.get("verification_pass_rate", 0)),
+            fra_verifier=ver_m.get("fra_verifier", m.get("fra_verifier", 0)),
             csr=m.get("csr", 0),
             cpr=m.get("cpr", 0),
             umr=m.get("umr", 0),
@@ -159,7 +173,8 @@ def load_and_compute(json_path: str) -> MetricsResult:
 
 def print_comparison_table(results: dict) -> None:
     """
-    Print a side-by-side comparison table of metrics from multiple experiments.
+    Print a side-by-side comparison table of metrics from multiple experiments,
+    distinguishing Ground-Truth from Internal-Verifier metrics.
 
     Args:
         results: Dict mapping experiment name → MetricsResult.
@@ -170,29 +185,46 @@ def print_comparison_table(results: dict) -> None:
         print("Install tabulate for formatted tables: pip install tabulate")
         return
 
-    metrics_names = ["Accuracy", "Precision", "Recall", "F1", "CSR", "CPR", "UMR", "FRA"]
-    headers = ["Metric"] + list(results.keys())
+    metrics_list = [
+        # (Label, Attribute, Category)
+        ("HDA (Accuracy)", "accuracy", "Ground Truth"),
+        ("Precision", "precision", "Ground Truth"),
+        ("Recall", "recall", "Ground Truth"),
+        ("F1 Score", "f1_score", "Ground Truth"),
+        ("CSR_GT (Ground Truth)", "csr_gt", "Ground Truth"),
+        ("CPR_GT (Claim Preservation)", "cpr_gt", "Ground Truth"),
+        ("UMR_GT (Unnecessary Modification)", "umr_gt", "Ground Truth"),
+        ("RPS (Response Preservation)", "rps", "Ground Truth"),
+        ("FRA_GT (Final Response - GT)", "fra_gt", "Ground Truth"),
+        ("CSR_Verifier (Self-Verification)", "csr_verifier", "Internal Verifier"),
+        ("Acceptance Rate", "acceptance_rate", "Internal Verifier"),
+        ("Verification Pass Rate", "verification_pass_rate", "Internal Verifier"),
+        ("FRA_Verifier (Final - Verifier)", "fra_verifier", "Internal Verifier"),
+    ]
+    headers = ["Category", "Metric"] + list(results.keys())
 
     rows = []
-    for i, metric_name in enumerate(metrics_names):
-        row = [metric_name]
+    for label, attr, cat in metrics_list:
+        row = [cat, label]
         for exp_name, mr in results.items():
-            values = [
-                mr.accuracy, mr.precision, mr.recall, mr.f1_score,
-                mr.csr, mr.cpr, mr.umr, mr.fra,
-            ]
-            row.append(f"{values[i]:.4f}")
+            val = getattr(mr, attr, None)
+            if val is None:
+                row.append("N/A")
+            elif isinstance(val, (int, float)):
+                row.append(f"{val:.4f}")
+            else:
+                row.append(str(val))
         rows.append(row)
 
-    print(f"\n{Fore.CYAN}{'=' * 60}")
-    print("  METRICS COMPARISON TABLE")
-    print(f"{'=' * 60}{Style.RESET_ALL}")
+    print(f"\n{Fore.CYAN}{'=' * 75}")
+    print("  METRICS COMPARISON TABLE (Ground-Truth vs Internal Verifier)")
+    print(f"{'=' * 75}{Style.RESET_ALL}")
     print(tabulate(rows, headers=headers, tablefmt="grid"))
 
 
 def print_latex_table(results: dict) -> None:
     """
-    Print a LaTeX table suitable for paper submission.
+    Print a LaTeX table suitable for paper submission with metric separation.
 
     Args:
         results: Dict mapping experiment name → MetricsResult.
@@ -201,41 +233,48 @@ def print_latex_table(results: dict) -> None:
     col_header = " & ".join(exp_names)
 
     print("\n% LaTeX Table — Hallucination Correction Metrics")
-    print("% Generated by compute_metrics.py")
+    print("% Generated by compute_metrics.py (Ground-Truth vs Verifier Separated)")
     print("\\begin{table}[h]")
     print("\\centering")
-    print(f"\\begin{{tabular}}{{l{'c' * len(exp_names)}}}")
+    print(f"\\begin{{tabular}}{{ll{'c' * len(exp_names)}}}")
     print("\\hline")
-    print(f"\\textbf{{Metric}} & {col_header} \\\\")
+    print(f"\\textbf{{Type}} & \\textbf{{Metric}} & {col_header} \\\\")
     print("\\hline")
 
     metrics_data = [
-        ("HDA (Accuracy)", "accuracy"),
-        ("Precision", "precision"),
-        ("Recall", "recall"),
-        ("F1 Score", "f1_score"),
-        ("Correction Success Rate (CSR)", "csr"),
-        ("Claim Preservation Rate (CPR)", "cpr"),
-        ("Unnecessary Modification Rate (UMR)", "umr"),
-        ("Final Response Accuracy (FRA)", "fra"),
+        ("Ground Truth", "HDA (Accuracy)", "accuracy"),
+        ("Ground Truth", "Precision", "precision"),
+        ("Ground Truth", "Recall", "recall"),
+        ("Ground Truth", "F1 Score", "f1_score"),
+        ("Ground Truth", "CSR\\_GT", "csr_gt"),
+        ("Ground Truth", "CPR\\_GT", "cpr_gt"),
+        ("Ground Truth", "UMR\\_GT", "umr_gt"),
+        ("Ground Truth", "RPS", "rps"),
+        ("Ground Truth", "FRA\\_GT", "fra_gt"),
+        ("Verifier", "CSR\\_Verifier", "csr_verifier"),
+        ("Verifier", "Acceptance Rate", "acceptance_rate"),
+        ("Verifier", "Verification Pass Rate", "verification_pass_rate"),
+        ("Verifier", "FRA\\_Verifier", "fra_verifier"),
     ]
 
-    for label, attr in metrics_data:
-        values = " & ".join(
-            f"{getattr(mr, attr):.4f}" for mr in results.values()
-        )
-        print(f"{label} & {values} \\\\")
+    for cat, label, attr in metrics_data:
+        vals = []
+        for mr in results.values():
+            v = getattr(mr, attr, None)
+            vals.append(f"{v:.4f}" if isinstance(v, (int, float)) else "N/A")
+        values_str = " & ".join(vals)
+        print(f"{cat} & {label} & {values_str} \\\\")
 
     print("\\hline")
     print("\\end{tabular}")
-    print(f"\\caption{{Evaluation results for the Selective Evidence-Guided Hallucination Correction Framework.}}")
+    print(f"\\caption{{Evaluation results distinguishing external ground-truth metrics from internal verifier metrics.}}")
     print("\\label{tab:metrics}")
     print("\\end{table}")
 
 
 def save_to_csv(results: dict, csv_path: str) -> None:
     """
-    Save comparison metrics to a CSV file.
+    Save comparison metrics to a CSV file with explicit Evaluation Type.
 
     Args:
         results:  Dict mapping experiment name → MetricsResult.
@@ -248,40 +287,55 @@ def save_to_csv(results: dict, csv_path: str) -> None:
         import csv
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
-            # Header
-            writer.writerow(["Metric"] + list(results.keys()))
+            writer.writerow(["Category", "Evaluation Type", "Metric"] + list(results.keys()))
             metrics_data = [
-                ("Accuracy",  "accuracy"),
-                ("Precision", "precision"),
-                ("Recall",    "recall"),
-                ("F1 Score",  "f1_score"),
-                ("CSR",       "csr"),
-                ("CPR",       "cpr"),
-                ("UMR",       "umr"),
-                ("FRA",       "fra"),
+                ("Ground Truth", "ground_truth", "Accuracy (HDA)", "accuracy"),
+                ("Ground Truth", "ground_truth", "Precision", "precision"),
+                ("Ground Truth", "ground_truth", "Recall", "recall"),
+                ("Ground Truth", "ground_truth", "F1 Score", "f1_score"),
+                ("Ground Truth", "ground_truth", "CSR_GT", "csr_gt"),
+                ("Ground Truth", "ground_truth", "CPR_GT", "cpr_gt"),
+                ("Ground Truth", "ground_truth", "UMR_GT", "umr_gt"),
+                ("Ground Truth", "ground_truth", "FRA_GT", "fra_gt"),
+                ("Internal Verifier", "internal_verifier", "CSR_Verifier", "csr_verifier"),
+                ("Internal Verifier", "internal_verifier", "Acceptance Rate", "acceptance_rate"),
+                ("Internal Verifier", "internal_verifier", "Verification Pass Rate", "verification_pass_rate"),
+                ("Internal Verifier", "internal_verifier", "FRA_Verifier", "fra_verifier"),
             ]
-            for label, attr in metrics_data:
-                row = [label] + [f"{getattr(mr, attr):.4f}" for mr in results.values()]
+            for cat, ev_type, label, attr in metrics_data:
+                row = [cat, ev_type, label] + [
+                    f"{getattr(mr, attr):.4f}" if isinstance(getattr(mr, attr, None), (int, float)) else "N/A"
+                    for mr in results.values()
+                ]
                 writer.writerow(row)
         print(f"Saved to {csv_path}")
         return
 
     rows = []
     metrics_data = [
-        ("Accuracy",  "accuracy"),
-        ("Precision", "precision"),
-        ("Recall",    "recall"),
-        ("F1 Score",  "f1_score"),
-        ("CSR",       "csr"),
-        ("CPR",       "cpr"),
-        ("UMR",       "umr"),
-        ("FRA",       "fra"),
+        ("Ground Truth", "ground_truth", "Accuracy (HDA)", "accuracy"),
+        ("Ground Truth", "ground_truth", "Precision", "precision"),
+        ("Ground Truth", "ground_truth", "Recall", "recall"),
+        ("Ground Truth", "ground_truth", "F1 Score", "f1_score"),
+        ("Ground Truth", "ground_truth", "CSR_GT", "csr_gt"),
+        ("Ground Truth", "ground_truth", "CPR_GT", "cpr_gt"),
+        ("Ground Truth", "ground_truth", "UMR_GT", "umr_gt"),
+        ("Ground Truth", "ground_truth", "FRA_GT", "fra_gt"),
+        ("Internal Verifier", "internal_verifier", "CSR_Verifier", "csr_verifier"),
+        ("Internal Verifier", "internal_verifier", "Acceptance Rate", "acceptance_rate"),
+        ("Internal Verifier", "internal_verifier", "Verification Pass Rate", "verification_pass_rate"),
+        ("Internal Verifier", "internal_verifier", "FRA_Verifier", "fra_verifier"),
     ]
-    for label, attr in metrics_data:
-        row = {"Metric": label}
+    for cat, ev_type, label, attr in metrics_data:
+        row = {"Category": cat, "Evaluation Type": ev_type, "Metric": label}
         for exp_name, mr in results.items():
-            row[exp_name] = round(getattr(mr, attr), 4)
+            val = getattr(mr, attr, None)
+            row[exp_name] = round(val, 4) if isinstance(val, (int, float)) else "N/A"
         rows.append(row)
+
+    df = pd.DataFrame(rows)
+    df.to_csv(csv_path, index=False)
+    print(f"\n{Fore.GREEN}Metrics saved to {csv_path}{Style.RESET_ALL}")
 
     df = pd.DataFrame(rows)
     df.to_csv(csv_path, index=False)

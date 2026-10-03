@@ -46,7 +46,10 @@ Design Decisions:
 """
 
 import re
-import spacy
+try:
+    import spacy
+except ImportError:
+    spacy = None
 from dataclasses import dataclass
 from typing import List, Optional
 from loguru import logger
@@ -57,20 +60,40 @@ from config import FrameworkConfig
 @dataclass
 class ClaimSpan:
     """
-    An atomic factual claim with its location in the original response.
+    An atomic factual claim with its exact location in the original response.
 
     Attributes:
-        claim_id:      Zero-based index of this claim in the extraction order.
-        text:          The atomic claim text (normalized, ends with '.').
-        start_char:    Start character offset in the original LLM response.
-        end_char:      End character offset in the original LLM response.
-        original_text: The raw sentence text before atomization.
+        claim_id:       Zero-based index of this claim in the extraction order.
+        text:           The atomic claim text (normalized, ends with '.').
+        start_char:     Start character offset in the original LLM response.
+        end_char:       End character offset in the original LLM response.
+        original_text:  The raw sentence text before atomization.
+        sentence_index: Zero-based sentence index in the source response.
+        claim_text:     Alias for text for API consistency.
     """
-    claim_id:      int
-    text:          str
-    start_char:    int
-    end_char:      int
-    original_text: str = ""
+    claim_id:       int
+    text:           str
+    start_char:     int
+    end_char:       int
+    original_text:  str = ""
+    sentence_index: int = 0
+    claim_text:     str = ""
+
+    def __post_init__(self):
+        if not self.claim_text:
+            self.claim_text = self.text
+        elif not self.text:
+            self.text = self.claim_text
+
+    def to_dict(self) -> dict:
+        return {
+            "claim_id": self.claim_id,
+            "claim_text": self.claim_text,
+            "start_char": self.start_char,
+            "end_char": self.end_char,
+            "sentence_index": self.sentence_index,
+            "original_text": self.original_text,
+        }
 
 
 # Alias for research specification compliance
@@ -86,7 +109,7 @@ class ClaimExtractor:
         extractor = ClaimExtractor(config)
         spans = extractor.extract_spans("Einstein was born in 1879 in Germany.")
         for s in spans:
-            print(s.text, s.start_char, s.end_char)
+            print(s.claim_text, s.start_char, s.end_char, s.sentence_index)
 
     Usage (legacy / backward compat):
         claims = extractor.extract("Einstein was born in 1879 in Germany.")
@@ -95,6 +118,11 @@ class ClaimExtractor:
 
     def __init__(self, config: Optional[FrameworkConfig] = None):
         self.config = config or FrameworkConfig()
+        if spacy is None:
+            raise RuntimeError(
+                "spaCy is required for ClaimExtractor.\n"
+                "Install it with: pip install spacy && python -m spacy download en_core_web_sm"
+            )
         logger.info(f"Loading spaCy model: {self.config.spacy_model}")
         try:
             self.nlp = spacy.load(self.config.spacy_model)
@@ -121,7 +149,7 @@ class ClaimExtractor:
             llm_answer: Raw text output from the LLM.
 
         Returns:
-            List of ClaimSpan objects with start_char/end_char offsets.
+            List of ClaimSpan objects with start_char/end_char offsets and sentence_index.
         """
         if not llm_answer or not llm_answer.strip():
             logger.warning("Empty LLM answer received -- no claims extracted.")
@@ -133,7 +161,7 @@ class ClaimExtractor:
         claim_spans: List[ClaimSpan] = []
         claim_id = 0
 
-        for sent in doc.sents:
+        for sentence_idx, sent in enumerate(doc.sents):
             sent_text = sent.text.strip()
             if not sent_text:
                 continue
@@ -168,9 +196,11 @@ class ClaimExtractor:
                 span = ClaimSpan(
                     claim_id=claim_id,
                     text=atomic,
+                    claim_text=atomic,
                     start_char=span_start,
                     end_char=span_end,
                     original_text=orig_span_text,
+                    sentence_index=sentence_idx,
                 )
                 claim_spans.append(span)
                 claim_id += 1

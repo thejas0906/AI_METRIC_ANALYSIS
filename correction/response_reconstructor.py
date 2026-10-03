@@ -29,8 +29,9 @@ Fallback:
   a paragraph (the old behaviour).
 """
 
+import difflib
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from loguru import logger
 
 from correction.claim_corrector import CorrectedClaim, CorrectionStatus
@@ -53,6 +54,7 @@ class ReconstructedResponse:
         failed_corrections:  Claims where correction failed.
         total_claims:        Total number of atomic claims.
         correction_report:   Human-readable summary of changes.
+        rps:                 Response Preservation Score (expected ≈ 1.0).
     """
     final_text:           str
     corrected_claims:     List[str] = field(default_factory=list)
@@ -61,6 +63,7 @@ class ReconstructedResponse:
     failed_corrections:   List[str] = field(default_factory=list)
     total_claims:         int       = 0
     correction_report:    str       = ""
+    rps:                  float     = 1.0
 
 
 # ------------------------------------------------------------------
@@ -80,6 +83,7 @@ class ResponseReconstructor:
             original_response=original_text,
         )
         print(response.final_text)
+        print(response.rps)
     """
 
     def reconstruct(
@@ -107,13 +111,14 @@ class ResponseReconstructor:
             original_response: Original LLM response for span surgery.
 
         Returns:
-            ReconstructedResponse with final text and statistics.
+            ReconstructedResponse with final text, statistics, and RPS.
         """
         if not corrected_claims:
             logger.warning("No corrected claims to reconstruct -- returning empty response.")
             return ReconstructedResponse(
                 final_text=original_response or "",
                 total_claims=0,
+                rps=1.0,
             )
 
         preserved_claims:   List[str] = []
@@ -136,9 +141,17 @@ class ResponseReconstructor:
                 failed_corrections.append(cc.original_claim)
 
         # Choose reconstruction strategy
+        rps = 1.0
+        applied_replacements = []
+
         if original_response and claim_spans:
-            final_text = self._span_surgery(
+            final_text, applied_replacements = self._span_surgery(
                 original_response, corrected_claims, claim_spans, annotate
+            )
+            rps = self.compute_rps(
+                original=original_response,
+                reconstructed=final_text,
+                replacements=applied_replacements,
             )
         elif original_response and any(
             cc.status == CorrectionStatus.CORRECTED for cc in corrected_claims
@@ -147,10 +160,21 @@ class ResponseReconstructor:
             final_text = self._string_search_surgery(
                 original_response, corrected_claims, annotate
             )
+            rps = self.compute_rps(
+                original=original_response,
+                reconstructed=final_text,
+            )
         else:
             # Legacy: join claim texts
             parts = self._collect_parts(corrected_claims, annotate)
             final_text = self._join_claims(parts)
+            if original_response:
+                rps = self.compute_rps(
+                    original=original_response,
+                    reconstructed=final_text,
+                )
+            else:
+                rps = 1.0
 
         report = self._build_report(
             total=len(corrected_claims),
@@ -159,13 +183,14 @@ class ResponseReconstructor:
             flagged=flagged_claims,
             failed=failed_corrections,
             original_response=original_response,
+            rps=rps,
         )
 
         logger.info(
             f"Response reconstructed: {len(preserved_claims)} preserved, "
             f"{len(corrected_list)} corrected, "
             f"{len(flagged_claims)} flagged, "
-            f"{len(failed_corrections)} failed."
+            f"{len(failed_corrections)} failed. RPS={rps:.4f}"
         )
 
         return ReconstructedResponse(
@@ -176,6 +201,7 @@ class ResponseReconstructor:
             failed_corrections=failed_corrections,
             total_claims=len(corrected_claims),
             correction_report=report,
+            rps=rps,
         )
 
     # ------------------------------------------------------------------
@@ -188,7 +214,7 @@ class ResponseReconstructor:
         corrected_claims: List[CorrectedClaim],
         claim_spans,              # List[ClaimSpan]
         annotate: bool = False,
-    ) -> str:
+    ) -> Tuple[str, List[Tuple[int, int, str]]]:
         """
         Replace ONLY the corrected claim spans in the original response.
 
@@ -204,12 +230,12 @@ class ResponseReconstructor:
             annotate:         If True, wrap replacements with annotation.
 
         Returns:
-            Modified response string.
+            Tuple of (modified_response_str, applied_replacements)
         """
         result = original
 
         # Build (start_char, end_char, replacement) triples for CORRECTED claims
-        replacements = []
+        raw_replacements = []
         for cc, span in zip(corrected_claims, claim_spans):
             if cc.status != CorrectionStatus.CORRECTED:
                 continue
@@ -218,27 +244,135 @@ class ResponseReconstructor:
             if annotate:
                 replacement = f"[CORRECTED: was '{cc.original_claim}'] {replacement}"
 
-            # Ensure replacement ends with sentence termination
-            if replacement and not replacement.endswith((".","?","!")):
-                replacement += "."
+            orig_slice = original[span.start_char:span.end_char]
 
-            replacements.append((span.start_char, span.end_char, replacement))
+            # Preserve punctuation and formatting:
+            # If the original span text ended with terminal punctuation, ensure replacement does too.
+            if orig_slice.endswith((".", "?", "!")):
+                if replacement and not replacement.endswith((".", "?", "!")):
+                    replacement += orig_slice[-1]
+            else:
+                # If original span did NOT end with punctuation, and original text immediately
+                # following span.end_char starts with punctuation, avoid duplicating punctuation.
+                if span.end_char < len(original) and original[span.end_char] in (".", "?", "!", ",", ";", ":"):
+                    replacement = replacement.rstrip(".?!,;:")
 
-        # Sort descending by start_char to preserve offset validity
-        replacements.sort(key=lambda x: x[0], reverse=True)
+            raw_replacements.append((span.start_char, span.end_char, replacement))
 
-        for start, end, replacement in replacements:
-            # Validate offsets are still within range after previous edits
-            # (offsets are relative to the ORIGINAL string, which we keep)
-            if start < 0 or end > len(result) or start >= end:
+        # Sort descending by start_char to preserve offset validity during substitution
+        replacements_descending = sorted(raw_replacements, key=lambda x: x[0], reverse=True)
+
+        applied = []
+        for start, end, replacement in replacements_descending:
+            if start < 0 or end > len(original) or start >= end:
                 logger.warning(
-                    f"Span [{start},{end}) out of range for result "
-                    f"(len={len(result)}); skipping."
+                    f"Span [{start},{end}) out of range for original "
+                    f"(len={len(original)}); skipping."
                 )
                 continue
+            # Surgical span replacement: response[start:end] = replacement
             result = result[:start] + replacement + result[end:]
+            applied.append((start, end, replacement))
 
-        return result
+        # Sort ascending by start_char for caller / RPS computation
+        applied_ascending = sorted(applied, key=lambda x: x[0])
+        return result, applied_ascending
+
+    @staticmethod
+    def compute_rps(
+        original: str,
+        reconstructed: str,
+        corrected_spans: Optional[List[Tuple[int, int]]] = None,
+        replacements: Optional[List[Tuple[int, int, str]]] = None,
+    ) -> float:
+        """
+        Compute Response Preservation Score (RPS):
+
+            RPS = (Unchanged Characters Outside Corrected Spans) /
+                  (Total Characters Outside Corrected Spans)
+
+        Expected: RPS ≈ 1.0 (approaching 1.0 indicates perfect preservation).
+
+        Args:
+            original:        The original LLM response text.
+            reconstructed:   The reconstructed response text.
+            corrected_spans: Optional list of (start_char, end_char) intervals for corrected claims.
+            replacements:    Optional list of (start_char, end_char, replacement_text).
+
+        Returns:
+            RPS float in [0.0, 1.0].
+        """
+        if not original:
+            return 1.0
+
+        if corrected_spans is None:
+            if replacements:
+                corrected_spans = [(s, e) for s, e, _ in replacements]
+            else:
+                corrected_spans = []
+
+        if not corrected_spans:
+            if original == reconstructed:
+                return 1.0
+            matcher = difflib.SequenceMatcher(None, original, reconstructed)
+            unchanged = sum(m.size for m in matcher.get_matching_blocks())
+            return round(unchanged / len(original), 4)
+
+        # Sort and merge any overlapping intervals
+        sorted_spans = sorted(corrected_spans, key=lambda x: x[0])
+        merged_spans = []
+        for s, e in sorted_spans:
+            s_clamp = max(0, min(s, len(original)))
+            e_clamp = max(s_clamp, min(e, len(original)))
+            if not merged_spans:
+                merged_spans.append([s_clamp, e_clamp])
+            else:
+                if s_clamp <= merged_spans[-1][1]:
+                    merged_spans[-1][1] = max(merged_spans[-1][1], e_clamp)
+                else:
+                    merged_spans.append([s_clamp, e_clamp])
+
+        # Extract outside segments from original text
+        orig_outside_segments = []
+        last_end = 0
+        for s, e in merged_spans:
+            if s > last_end:
+                orig_outside_segments.append(original[last_end:s])
+            last_end = max(last_end, e)
+        if last_end < len(original):
+            orig_outside_segments.append(original[last_end:])
+
+        orig_outside = "".join(orig_outside_segments)
+        total_outside = len(orig_outside)
+        if total_outside == 0:
+            return 1.0
+
+        # Extract outside segments from reconstructed text if exact replacements are provided
+        if replacements:
+            sorted_reps = sorted(replacements, key=lambda x: x[0])
+            recon_outside_segments = []
+            recon_pos = 0
+            last_orig_end = 0
+            for s, e, rep in sorted_reps:
+                seg_len = max(0, s - last_orig_end)
+                recon_outside_segments.append(reconstructed[recon_pos : recon_pos + seg_len])
+                recon_pos += seg_len + len(rep)
+                last_orig_end = e
+            if last_orig_end < len(original):
+                rem_len = len(original) - last_orig_end
+                recon_outside_segments.append(reconstructed[recon_pos : recon_pos + rem_len])
+            recon_outside = "".join(recon_outside_segments)
+
+            if recon_outside == orig_outside:
+                return 1.0
+
+            matcher = difflib.SequenceMatcher(None, orig_outside, recon_outside)
+            unchanged = sum(m.size for m in matcher.get_matching_blocks())
+            return round(min(unchanged, total_outside) / total_outside, 4)
+        else:
+            matcher = difflib.SequenceMatcher(None, orig_outside, reconstructed)
+            unchanged = sum(m.size for m in matcher.get_matching_blocks())
+            return round(min(unchanged, total_outside) / total_outside, 4)
 
     @staticmethod
     def _string_search_surgery(
@@ -329,6 +463,7 @@ class ResponseReconstructor:
         flagged: List[str],
         failed: List[str],
         original_response: Optional[str],
+        rps: float = 1.0,
     ) -> str:
         """Build a human-readable correction report for transparency."""
         lines = [
@@ -340,6 +475,7 @@ class ResponseReconstructor:
             f"  CONTRADICTED (corrected): {len(corrected)}",
             f"  UNVERIFIABLE (flagged)  : {len(flagged)}",
             f"  Failed corrections      : {len(failed)}",
+            f"  Preservation Score (RPS): {rps:.4f}",
             "=" * 60,
         ]
 

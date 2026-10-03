@@ -94,6 +94,7 @@ class ResponseEvaluationSample:
     gold_claims: List[GoldClaimAnnotation] = field(default_factory=list)
     source:      str                       = "benchmark"
     metadata:    dict                      = field(default_factory=dict)
+    response_id: str                       = ""
 
     # Backward compatibility properties
     @property
@@ -150,6 +151,7 @@ class DatasetLoader:
             "fever":      self._load_fever,
             "truthfulqa": self._load_truthfulqa,
             "custom":     self._load_custom,
+            "multiclaim": lambda split, max_samples: self.load_multiclaim_benchmark(max_samples=max_samples),
         }
 
         loader_fn = loaders.get(dataset_name.lower())
@@ -161,6 +163,8 @@ class DatasetLoader:
 
         if dataset_name.lower() == "custom":
             samples = loader_fn(custom_path or "data/custom_claims.csv", max_samples)
+        elif dataset_name.lower() == "multiclaim":
+            samples = loader_fn(split, max_samples)
         else:
             samples = loader_fn(split, max_samples)
 
@@ -387,7 +391,9 @@ class DatasetLoader:
         return samples
 
     def load_multiclaim_benchmark(
-        self, max_samples: Optional[int] = None
+        self,
+        max_samples: Optional[int] = None,
+        json_path: Optional[str] = None,
     ) -> List[ResponseEvaluationSample]:
         """
         Load multi-claim benchmark responses with ground-truth per-claim annotations.
@@ -395,19 +401,63 @@ class DatasetLoader:
         Each sample represents a full LLM response to a question with multiple
         claims that are independently annotated as SUPPORTED, CONTRADICTED, or UNVERIFIABLE.
 
-        TruthfulQA Transformation Note:
-            When adapting TruthfulQA to multi-claim evaluation, the question prompt
-            is combined with the model's generated answer. The best truthful answer
-            provides supported claims, while common misconceptions or incorrect answers
-            provide contradicted claims. Unverifiable assertions (e.g. subjective or
-            unreferenced claims) provide unverifiable claims.
-
         Args:
             max_samples: Maximum number of multi-claim samples to return.
+            json_path:   Optional custom path to multiclaim benchmark JSON.
 
         Returns:
             List of ResponseEvaluationSample objects.
         """
+        # Attempt to load from JSON benchmark file
+        if json_path is None:
+            candidate = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "data",
+                "multiclaim_benchmark.json",
+            )
+            if os.path.exists(candidate):
+                json_path = candidate
+
+        if json_path and os.path.exists(json_path):
+            import json
+            logger.info(f"Loading multi-claim benchmark from JSON: {json_path}")
+            with open(json_path, "r", encoding="utf-8") as f:
+                raw_data = json.load(f)
+
+            benchmark = []
+            for item in raw_data:
+                gold_claims = [
+                    GoldClaimAnnotation(
+                        claim_text=gc["claim_text"],
+                        gold_label=gc["gold_label"],
+                        gold_correction=gc.get("gold_correction"),
+                    )
+                    for gc in item.get("gold_claims", [])
+                ]
+                metadata = item.get("metadata", {})
+                if "domain" in item:
+                    metadata["domain"] = item["domain"]
+                resp_id = item.get("response_id", "")
+                if resp_id:
+                    metadata["response_id"] = resp_id
+
+                benchmark.append(
+                    ResponseEvaluationSample(
+                        question=item.get("question", ""),
+                        response=item.get("response", ""),
+                        gold_claims=gold_claims,
+                        source=item.get("domain", "multiclaim_benchmark"),
+                        metadata=metadata,
+                        response_id=resp_id,
+                    )
+                )
+
+            if max_samples:
+                benchmark = benchmark[:max_samples]
+            logger.info(f"Loaded {len(benchmark)} multi-claim response samples.")
+            return benchmark
+
+        # Fallback to hardcoded examples if JSON not found
         benchmark = [
             ResponseEvaluationSample(
                 question="Tell me about Albert Einstein.",
