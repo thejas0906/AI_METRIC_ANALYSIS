@@ -83,13 +83,15 @@ class EvidenceRetriever:
         self.config = config or FrameworkConfig()
 
         # Wikipedia-API client (requires user agent per API policy)
+        user_agent = getattr(
+            self.config,
+            "wikipedia_user_agent",
+            "SelectiveHallucinationCorrectionBot/1.0 (https://github.com/thejas0906/AI_METRIC_ANALYSIS; hallucination-research@example.com)"
+        )
         self.wiki = wikipediaapi.Wikipedia(
-            language=self.config.__dict__.get("wikipedia_language", "en"),
+            user_agent=user_agent,
+            language=getattr(self.config, "wikipedia_language", "en"),
             extract_format=wikipediaapi.ExtractFormat.WIKI,
-            user_agent=self.config.__dict__.get(
-                "wikipedia_user_agent",
-                "HallucinationCorrectionBot/1.0"
-            ),
         )
 
         # Load spaCy for keyword/entity extraction from claims
@@ -222,22 +224,38 @@ class EvidenceRetriever:
             "format": "json",
         }
 
-        try:
-            resp = requests.get(
-                api_url,
-                params=params,
-                timeout=10,
-                headers={"User-Agent": "HallucinationCorrectionBot/1.0"},
+        headers = {
+            "User-Agent": getattr(
+                self.config,
+                "wikipedia_user_agent",
+                "SelectiveHallucinationCorrectionBot/1.0 (https://github.com/thejas0906/AI_METRIC_ANALYSIS; hallucination-research@example.com)"
             )
-            resp.raise_for_status()
-            data = resp.json()
-            # OpenSearch returns: [query, [titles], [descriptions], [urls]]
-            titles = data[1]
-            urls   = data[3]
-            return list(zip(titles, urls))
-        except Exception as e:
-            logger.warning(f"Wikipedia search failed for query '{query}': {e}")
-            return []
+        }
+
+        for attempt in range(3):
+            try:
+                resp = requests.get(
+                    api_url,
+                    params=params,
+                    timeout=10,
+                    headers=headers,
+                )
+                if resp.status_code == 429:
+                    wait_time = (attempt + 1) * 2
+                    logger.warning(f"Wikipedia 429 rate limit. Waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                # OpenSearch returns: [query, [titles], [descriptions], [urls]]
+                titles = data[1]
+                urls   = data[3]
+                return list(zip(titles, urls))
+            except Exception as e:
+                if attempt == 2:
+                    logger.warning(f"Wikipedia search failed for query '{query}': {e}")
+                time.sleep(1)
+        return []
 
     def _extract_passages(
         self, page_title: str, claim: str

@@ -6,6 +6,14 @@ Unit Tests for the Evidence Quality Assessment Module (Phase 3)
 Tests reliability weight lookup, EQS computation, source
 classification, and edge case handling.
 
+Normalization formula (K=0.30):
+    norm = raw / (raw + 0.30)
+
+This is a saturating rational normalization (Michaelis-Menten / Hill-type curve)
+chosen so that a "good" BM25-lite relevance score of ~0.30 maps to ~0.50,
+avoiding the compression artifacts of the naive raw/(raw+1)
+formula which maps most real scores below 0.33.
+
 Run with:
     pytest tests/test_evidence_quality.py -v
 """
@@ -24,9 +32,22 @@ from verification.evidence_quality import (
 )
 
 
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
+# Normalization constant (must match evidence_quality.py)
+# ------------------------------------------------------------------
+_K = 0.30  # calibration constant for _normalize_relevance
+
+
+def expected_norm(raw: float) -> float:
+    """Reference implementation of the normalization formula."""
+    if raw <= 0:
+        return 0.0
+    return raw / (raw + _K)
+
+
+# ------------------------------------------------------------------
 # Fixtures
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
 
 @pytest.fixture
 def assessor():
@@ -54,78 +75,137 @@ def make_retrieval(claim="Test claim.", evidence_list=None) -> RetrievalResult:
     )
 
 
-# ──────────────────────────────────────────────────────────────────
-# Tests
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
+# Tests: Reliability Weights
+# ------------------------------------------------------------------
 
-class TestEvidenceQualityAssessor:
+class TestReliabilityWeights:
 
     def test_wikipedia_weight(self, assessor):
         """Wikipedia evidence should get weight 0.80."""
         ev = make_evidence(source_type="wikipedia")
-        weight = assessor._get_reliability_weight(ev)
-        assert weight == pytest.approx(0.80)
+        assert assessor._get_reliability_weight(ev) == pytest.approx(0.80)
 
     def test_peer_reviewed_weight(self, assessor):
         """Peer-reviewed sources should get weight 1.00."""
         ev = make_evidence(source_type="peer_reviewed")
-        weight = assessor._get_reliability_weight(ev)
-        assert weight == pytest.approx(1.00)
+        assert assessor._get_reliability_weight(ev) == pytest.approx(1.00)
 
     def test_government_weight(self, assessor):
         """Government sources should get weight 0.90."""
         ev = make_evidence(source_type="government")
-        weight = assessor._get_reliability_weight(ev)
-        assert weight == pytest.approx(0.90)
+        assert assessor._get_reliability_weight(ev) == pytest.approx(0.90)
 
     def test_news_weight(self, assessor):
         """News sources should get weight 0.60."""
         ev = make_evidence(source_type="news")
-        weight = assessor._get_reliability_weight(ev)
-        assert weight == pytest.approx(0.60)
+        assert assessor._get_reliability_weight(ev) == pytest.approx(0.60)
 
     def test_unknown_weight_fallback(self, assessor):
-        """Unknown source type should fall back to URL classification."""
+        """Unknown source type falls back to URL classification."""
         ev = make_evidence(source_type="unknown_type", url="https://example.com/test")
-        weight = assessor._get_reliability_weight(ev)
-        # Falls back to URL classification → "unknown" → 0.50
-        assert weight == pytest.approx(0.50)
+        assert assessor._get_reliability_weight(ev) == pytest.approx(0.50)
 
-    def test_gov_url_classification(self, assessor):
-        """URLs with '.gov' should be classified as 'government'."""
-        source_type = assessor.classify_source("https://www.cdc.gov/health/test")
-        assert source_type == "government"
 
-    def test_arxiv_url_classification(self, assessor):
-        """arXiv URLs should be classified as 'peer_reviewed'."""
-        source_type = assessor.classify_source("https://arxiv.org/abs/2401.00001")
-        assert source_type == "peer_reviewed"
+# ------------------------------------------------------------------
+# Tests: URL Classification
+# ------------------------------------------------------------------
 
-    def test_wikipedia_url_classification(self, assessor):
-        """Wikipedia URLs should be classified as 'wikipedia'."""
-        source_type = assessor.classify_source("https://en.wikipedia.org/wiki/Python")
-        assert source_type == "wikipedia"
+class TestSourceClassification:
 
-    def test_news_url_classification(self, assessor):
-        """BBC URLs should be classified as 'news'."""
-        source_type = assessor.classify_source("https://www.bbc.com/news/science")
-        assert source_type == "news"
+    def test_gov_url(self, assessor):
+        assert assessor.classify_source("https://www.cdc.gov/health/test") == "government"
 
-    def test_normalize_relevance_zero(self, assessor):
-        """Zero relevance should normalize to 0.0."""
+    def test_arxiv_url(self, assessor):
+        assert assessor.classify_source("https://arxiv.org/abs/2401.00001") == "peer_reviewed"
+
+    def test_wikipedia_url(self, assessor):
+        assert assessor.classify_source("https://en.wikipedia.org/wiki/Python") == "wikipedia"
+
+    def test_bbc_url(self, assessor):
+        assert assessor.classify_source("https://www.bbc.com/news/science") == "news"
+
+    def test_unknown_url(self, assessor):
+        assert assessor.classify_source("https://example.com/random") == "unknown"
+
+
+# ------------------------------------------------------------------
+# Tests: Normalization Formula (K=0.30)
+# ------------------------------------------------------------------
+
+class TestNormalizeRelevance:
+
+    def test_zero_relevance(self, assessor):
+        """Zero relevance -> 0.0."""
         assert assessor._normalize_relevance(0.0) == pytest.approx(0.0)
 
-    def test_normalize_relevance_positive(self, assessor):
-        """Positive relevance should normalize to (r / r+1)."""
-        r = 2.0
-        expected = r / (r + 1.0)
-        assert assessor._normalize_relevance(r) == pytest.approx(expected)
+    def test_negative_relevance(self, assessor):
+        """Negative relevance -> 0.0 (clamped)."""
+        assert assessor._normalize_relevance(-1.0) == pytest.approx(0.0)
 
-    def test_normalize_relevance_bounded(self, assessor):
-        """Normalized relevance should always be in [0, 1)."""
-        for r in [0, 0.5, 1, 5, 100]:
-            norm = assessor._normalize_relevance(r)
-            assert 0.0 <= norm < 1.0
+    def test_small_relevance(self, assessor):
+        """Small relevance uses K=0.30 formula."""
+        r = 0.05
+        assert assessor._normalize_relevance(r) == pytest.approx(expected_norm(r))
+
+    def test_medium_relevance(self, assessor):
+        """Medium relevance score."""
+        r = 0.30
+        # raw=0.30, K=0.30 -> norm = 0.30/0.60 = 0.50
+        assert assessor._normalize_relevance(r) == pytest.approx(0.50, rel=1e-4)
+
+    def test_high_relevance(self, assessor):
+        """High relevance score."""
+        r = 1.0
+        assert assessor._normalize_relevance(r) == pytest.approx(expected_norm(r))
+
+    def test_very_high_relevance(self, assessor):
+        """Very high relevance approaches 1.0."""
+        r = 100.0
+        norm = assessor._normalize_relevance(r)
+        assert norm > 0.99
+        assert norm < 1.0
+
+    def test_edge_case_raw_zero(self, assessor):
+        """Edge case: raw = 0 -> normalized relevance is exactly 0.0."""
+        assert assessor._normalize_relevance(0.0) == 0.0
+
+    def test_edge_case_very_small_raw(self, assessor):
+        """Edge case: very small raw (1e-6) -> strictly positive and bounded in [0, 1]."""
+        r = 1e-6
+        norm = assessor._normalize_relevance(r)
+        assert 0.0 < norm < 0.001
+        assert norm == pytest.approx(r / (r + 0.30))
+
+    def test_edge_case_medium_raw(self, assessor):
+        """Edge case: medium raw (0.30) -> exactly 0.50 (half-saturation point)."""
+        r = 0.30
+        assert assessor._normalize_relevance(r) == pytest.approx(0.50, rel=1e-5)
+
+    def test_edge_case_very_large_raw(self, assessor):
+        """Edge case: very large raw (1e6) -> bounded in [0, 1] and asymptotically approaches 1.0."""
+        r = 1e6
+        norm = assessor._normalize_relevance(r)
+        assert 0.999 < norm <= 1.0
+
+    def test_css_is_guaranteed_bounded_unit_interval(self, assessor):
+        """CSS = NLI_entailment * EQS must be strictly within [0, 1]."""
+        ev = make_evidence(source_type="peer_reviewed", relevance=1e6)
+        rr = make_retrieval(evidence_list=[ev])
+        qa = assessor.assess(rr)
+        eqs = qa.best_eqs
+        assert 0.0 <= eqs <= 1.0
+        # For any entailment probability in [0, 1]
+        for ent_prob in [0.0, 0.25, 0.5, 0.75, 1.0]:
+            css = ent_prob * eqs
+            assert 0.0 <= css <= 1.0
+
+
+# ------------------------------------------------------------------
+# Tests: EQS Computation
+# ------------------------------------------------------------------
+
+class TestEQSComputation:
 
     def test_eqs_is_product(self, assessor):
         """EQS should equal reliability_weight * normalized_relevance."""
@@ -133,8 +213,18 @@ class TestEvidenceQualityAssessor:
         rr = make_retrieval(evidence_list=[ev])
         qa = assessor.assess(rr)
         se = qa.scored_evidence[0]
-        expected_eqs = se.reliability_weight * se.normalized_relevance
-        assert se.evidence_quality_score == pytest.approx(expected_eqs)
+        expected = se.reliability_weight * se.normalized_relevance
+        assert se.evidence_quality_score == pytest.approx(expected)
+
+    def test_eqs_bounded(self, assessor):
+        """EQS must be in [0, 1]."""
+        for source_type in ["wikipedia", "peer_reviewed", "news"]:
+            for rel in [0.0, 0.1, 0.5, 1.0, 5.0]:
+                ev = make_evidence(source_type=source_type, relevance=rel)
+                rr = make_retrieval(evidence_list=[ev])
+                qa = assessor.assess(rr)
+                eqs = qa.scored_evidence[0].evidence_quality_score if qa.scored_evidence else 0.0
+                assert 0.0 <= eqs <= 1.0, f"EQS={eqs} out of [0,1] for {source_type}, rel={rel}"
 
     def test_best_eqs_is_max(self, assessor):
         """best_eqs should be the maximum EQS among all evidence items."""
@@ -146,19 +236,42 @@ class TestEvidenceQualityAssessor:
             max(se.evidence_quality_score for se in qa.scored_evidence)
         )
 
-    def test_empty_evidence_list(self, assessor):
-        """Empty evidence should produce empty scored_evidence and best_eqs=0."""
+    def test_empty_evidence(self, assessor):
+        """Empty evidence -> empty scored_evidence and best_eqs=0."""
         rr = RetrievalResult(claim="Test claim.", evidence=[], query_used="test")
         qa = assessor.assess(rr)
         assert qa.scored_evidence == []
         assert qa.best_eqs == pytest.approx(0.0)
 
-    def test_sorted_by_eqs_descending(self, assessor):
+    def test_sorted_descending(self, assessor):
         """scored_evidence should be sorted by EQS descending."""
-        ev1 = make_evidence(source_type="news",      relevance=0.1)
-        ev2 = make_evidence(source_type="wikipedia", relevance=3.0)
+        ev1 = make_evidence(source_type="news",       relevance=0.1)
+        ev2 = make_evidence(source_type="wikipedia",  relevance=3.0)
         ev3 = make_evidence(source_type="government", relevance=2.0)
         rr  = make_retrieval(evidence_list=[ev1, ev2, ev3])
         qa  = assessor.assess(rr)
         scores = [se.evidence_quality_score for se in qa.scored_evidence]
         assert scores == sorted(scores, reverse=True)
+
+    def test_css_reachable(self, assessor):
+        """
+        Verify that CSS = entailment_prob * EQS can reach the SUPPORTED
+        threshold (0.75) with realistic evidence.
+
+        With a strong source (peer_reviewed, weight=1.0) and high
+        relevance (raw=2.0, norm ~= 0.87), EQS ~= 0.87.
+        An entailment_prob of ~0.87 would then give CSS ~= 0.75.
+        This proves the SUPPORTED threshold is mathematically reachable.
+        """
+        ev = make_evidence(source_type="peer_reviewed", relevance=2.0)
+        rr = make_retrieval(evidence_list=[ev])
+        qa = assessor.assess(rr)
+        eqs = qa.scored_evidence[0].evidence_quality_score
+        # With entailment_prob=0.87, CSS would be ~= 0.87 * 0.87 = 0.756
+        # which exceeds the default css_supported=0.75 threshold.
+        simulated_css = 0.87 * eqs
+        config = FrameworkConfig()
+        assert simulated_css >= config.css_supported, (
+            f"SUPPORTED threshold {config.css_supported} not reachable: "
+            f"max simulated CSS = {simulated_css:.3f} with EQS = {eqs:.3f}"
+        )

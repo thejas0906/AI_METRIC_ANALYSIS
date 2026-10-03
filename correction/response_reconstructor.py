@@ -3,28 +3,30 @@ response_reconstructor.py  (Phase 6)
 ======================================
 Response Reconstruction Module
 ---------------------------------
-Merges corrected and preserved claims into a coherent final response.
+Implements MINIMUM NECESSARY CORRECTION: the original LLM response
+is preserved as closely as possible, with only the hallucinated
+claim spans surgically replaced.
 
-Takes the list of CorrectedClaim objects (output of Phase 5) and
-assembles them back into a readable paragraph or structured text,
-distinguishing between:
+Primary algorithm:
+  1. Start with the original response text.
+  2. Collect all CORRECTED claims (sorted by start_char descending so
+     that earlier replacements do not shift later offsets).
+  3. For each CORRECTED claim, locate the original sentence span
+     [start_char, end_char) in the current text and replace it with
+     the corrected claim text.
+  4. All SUPPORTED and UNVERIFIABLE claim text is left byte-for-byte
+     unchanged.
 
-  ✅ PRESERVED  → claim retained verbatim
-  ✏️  CORRECTED  → hallucinated claim replaced with corrected version
-  ⚠️  FLAGGED    → claim retained with optional inline annotation
-  ❌ FAILED     → claim retained with warning annotation
+Span-based replacement guarantees:
+  - Correct order (no reordering of claims)
+  - Correct scope (no surrounding text removed)
+  - Safe handling of duplicate claim text (uses offsets, not search)
+  - Exact preservation of unchanged passages
 
-The reconstructor also generates a structured correction report
-summarizing what changed and why — useful for research transparency.
-
-Design Decisions:
------------------
-- We join claims as a paragraph (no bullet points) to produce
-  natural-sounding text similar to the original LLM output.
-- Annotation mode can be toggled via `annotate=True` to embed
-  correction metadata directly into the text (useful for debugging).
-- The reconstruction order follows the original claim order to
-  maintain narrative coherence.
+Fallback:
+  If no original_response is provided (e.g., in unit tests), the
+  reconstructor falls back to joining the corrected claim strings as
+  a paragraph (the old behaviour).
 """
 
 from dataclasses import dataclass, field
@@ -34,9 +36,9 @@ from loguru import logger
 from correction.claim_corrector import CorrectedClaim, CorrectionStatus
 
 
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
 # Data Structures
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
 
 @dataclass
 class ReconstructedResponse:
@@ -53,95 +55,103 @@ class ReconstructedResponse:
         correction_report:   Human-readable summary of changes.
     """
     final_text:           str
-    corrected_claims:     List[str]    = field(default_factory=list)
-    preserved_claims:     List[str]    = field(default_factory=list)
-    flagged_claims:       List[str]    = field(default_factory=list)
-    failed_corrections:   List[str]    = field(default_factory=list)
-    total_claims:         int          = 0
-    correction_report:    str          = ""
+    corrected_claims:     List[str] = field(default_factory=list)
+    preserved_claims:     List[str] = field(default_factory=list)
+    flagged_claims:       List[str] = field(default_factory=list)
+    failed_corrections:   List[str] = field(default_factory=list)
+    total_claims:         int       = 0
+    correction_report:    str       = ""
 
 
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
 # Response Reconstructor
-# ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
 
 class ResponseReconstructor:
     """
-    Merges corrected claims into a coherent final response.
+    Merges corrected claims into a coherent final response using
+    span-level surgery on the original response text.
 
     Usage:
         reconstructor = ResponseReconstructor()
-        response = reconstructor.reconstruct(corrected_claims)
+        response = reconstructor.reconstruct(
+            corrected_claims=claims,
+            claim_spans=spans,
+            original_response=original_text,
+        )
         print(response.final_text)
-        print(response.correction_report)
     """
 
     def reconstruct(
         self,
         corrected_claims: List[CorrectedClaim],
+        claim_spans=None,        # List[ClaimSpan] | None
         annotate: bool = False,
         original_response: Optional[str] = None,
     ) -> ReconstructedResponse:
         """
         Assemble corrected claims into the final response.
 
+        When original_response and claim_spans are provided, performs
+        span-level surgery: only CORRECTED claim spans are replaced,
+        all other text is preserved verbatim.
+
+        When original_response is not provided, falls back to joining
+        claim strings as a paragraph (legacy behaviour).
+
         Args:
             corrected_claims:  List of CorrectedClaim objects from Phase 5.
-            annotate:          If True, embed correction annotations in text.
-            original_response: Original LLM response (for reference only).
+            claim_spans:       List of ClaimSpan objects from Phase 1
+                               (must be parallel to corrected_claims).
+            annotate:          If True, embed correction markers in text.
+            original_response: Original LLM response for span surgery.
 
         Returns:
             ReconstructedResponse with final text and statistics.
         """
         if not corrected_claims:
-            logger.warning("No corrected claims to reconstruct — returning empty response.")
+            logger.warning("No corrected claims to reconstruct -- returning empty response.")
             return ReconstructedResponse(
-                final_text="",
+                final_text=original_response or "",
                 total_claims=0,
             )
 
-        final_parts:        List[str] = []
         preserved_claims:   List[str] = []
         corrected_list:     List[str] = []
         flagged_claims:     List[str] = []
         failed_corrections: List[str] = []
 
+        # Classify each claim
         for cc in corrected_claims:
-            status = cc.status
-
-            if status == CorrectionStatus.PRESERVED:
-                # Use the original claim text (unchanged)
-                text = cc.corrected_claim   # same as original for PRESERVED
+            if cc.status == CorrectionStatus.PRESERVED:
                 preserved_claims.append(cc.original_claim)
-
-            elif status == CorrectionStatus.CORRECTED:
-                # Use the corrected (rewritten) claim
-                text = cc.corrected_claim
+            elif cc.status == CorrectionStatus.CORRECTED:
                 corrected_list.append(
-                    f"'{cc.original_claim}' → '{cc.corrected_claim}'"
+                    f"'{cc.original_claim}' -> '{cc.corrected_claim}'"
                 )
-                if annotate:
-                    text = f"[CORRECTED: was '{cc.original_claim}'] {text}"
-
-            elif status == CorrectionStatus.FLAGGED:
-                # Keep original but annotate if requested
-                text = cc.original_claim
+            elif cc.status == CorrectionStatus.FLAGGED:
                 flagged_claims.append(cc.original_claim)
-                if annotate:
-                    text = f"[UNVERIFIED] {text}"
-
-            else:  # FAILED
-                text = cc.original_claim   # revert to original
+            else:
+                # FAILED or FINAL_VERIFICATION_FAILED
                 failed_corrections.append(cc.original_claim)
-                if annotate:
-                    text = f"[CORRECTION FAILED] {text}"
 
-            final_parts.append(text)
+        # Choose reconstruction strategy
+        if original_response and claim_spans:
+            final_text = self._span_surgery(
+                original_response, corrected_claims, claim_spans, annotate
+            )
+        elif original_response and any(
+            cc.status == CorrectionStatus.CORRECTED for cc in corrected_claims
+        ):
+            # Fallback: string-search surgery (no exact offsets)
+            final_text = self._string_search_surgery(
+                original_response, corrected_claims, annotate
+            )
+        else:
+            # Legacy: join claim texts
+            parts = self._collect_parts(corrected_claims, annotate)
+            final_text = self._join_claims(parts)
 
-        # Join all parts into a coherent paragraph
-        final_text = self._join_claims(final_parts)
-
-        # Build correction report
         report = self._build_report(
             total=len(corrected_claims),
             preserved=preserved_claims,
@@ -168,25 +178,140 @@ class ResponseReconstructor:
             correction_report=report,
         )
 
-    # ──────────────────────────────────────────────────────────────
-    # Private Helpers
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Span Surgery (primary path)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _span_surgery(
+        original: str,
+        corrected_claims: List[CorrectedClaim],
+        claim_spans,              # List[ClaimSpan]
+        annotate: bool = False,
+    ) -> str:
+        """
+        Replace ONLY the corrected claim spans in the original response.
+
+        Processing order: descending by start_char so that replacements
+        of earlier spans do not shift the offsets of later spans.
+
+        Supported claims are left completely untouched.
+
+        Args:
+            original:         The original LLM response text.
+            corrected_claims: Parallel list of CorrectedClaim objects.
+            claim_spans:      Parallel list of ClaimSpan objects.
+            annotate:         If True, wrap replacements with annotation.
+
+        Returns:
+            Modified response string.
+        """
+        result = original
+
+        # Build (start_char, end_char, replacement) triples for CORRECTED claims
+        replacements = []
+        for cc, span in zip(corrected_claims, claim_spans):
+            if cc.status != CorrectionStatus.CORRECTED:
+                continue
+
+            replacement = cc.corrected_claim.strip()
+            if annotate:
+                replacement = f"[CORRECTED: was '{cc.original_claim}'] {replacement}"
+
+            # Ensure replacement ends with sentence termination
+            if replacement and not replacement.endswith((".","?","!")):
+                replacement += "."
+
+            replacements.append((span.start_char, span.end_char, replacement))
+
+        # Sort descending by start_char to preserve offset validity
+        replacements.sort(key=lambda x: x[0], reverse=True)
+
+        for start, end, replacement in replacements:
+            # Validate offsets are still within range after previous edits
+            # (offsets are relative to the ORIGINAL string, which we keep)
+            if start < 0 or end > len(result) or start >= end:
+                logger.warning(
+                    f"Span [{start},{end}) out of range for result "
+                    f"(len={len(result)}); skipping."
+                )
+                continue
+            result = result[:start] + replacement + result[end:]
+
+        return result
+
+    @staticmethod
+    def _string_search_surgery(
+        original: str,
+        corrected_claims: List[CorrectedClaim],
+        annotate: bool = False,
+    ) -> str:
+        """
+        Fallback surgery when exact offsets are not available.
+        Uses string search to find and replace original claim text.
+        """
+        result = original
+
+        # Process in reverse order by approximate position in text
+        for cc in reversed(corrected_claims):
+            if cc.status != CorrectionStatus.CORRECTED:
+                continue
+
+            original_span = cc.original_claim.strip()
+            corrected_span = cc.corrected_claim.strip()
+            if not original_span or original_span == corrected_span:
+                continue
+
+            replacement = corrected_span
+            if annotate:
+                replacement = f"[CORRECTED: was '{original_span}'] {corrected_span}"
+
+            if original_span in result:
+                result = result.replace(original_span, replacement, 1)
+            else:
+                # Case-insensitive fallback
+                lower_result = result.lower()
+                idx = lower_result.find(original_span.lower())
+                if idx >= 0:
+                    result = result[:idx] + replacement + result[idx + len(original_span):]
+                else:
+                    # Append as a correction note (do not silently drop)
+                    result = result + f" [{replacement}]"
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Legacy helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _collect_parts(
+        corrected_claims: List[CorrectedClaim],
+        annotate: bool,
+    ) -> List[str]:
+        """Build text parts list for legacy paragraph join."""
+        parts = []
+        for cc in corrected_claims:
+            if cc.status == CorrectionStatus.PRESERVED:
+                text = cc.corrected_claim
+            elif cc.status == CorrectionStatus.CORRECTED:
+                text = cc.corrected_claim
+                if annotate:
+                    text = f"[CORRECTED: was '{cc.original_claim}'] {text}"
+            elif cc.status == CorrectionStatus.FLAGGED:
+                text = cc.original_claim
+                if annotate:
+                    text = f"[UNVERIFIED] {text}"
+            else:
+                text = cc.original_claim
+                if annotate:
+                    text = f"[CORRECTION FAILED] {text}"
+            parts.append(text)
+        return parts
 
     @staticmethod
     def _join_claims(parts: List[str]) -> str:
-        """
-        Join atomic claim sentences into a coherent paragraph.
-
-        Each claim ends with a period (ensured by ClaimExtractor).
-        We simply join them with a space to form natural paragraphs.
-
-        Args:
-            parts: List of claim strings.
-
-        Returns:
-            Paragraph string.
-        """
-        # Clean up each part and join with spaces
+        """Join atomic claim sentences into a coherent paragraph."""
         cleaned = []
         for p in parts:
             p = p.strip()
@@ -205,29 +330,16 @@ class ResponseReconstructor:
         failed: List[str],
         original_response: Optional[str],
     ) -> str:
-        """
-        Build a human-readable correction report for transparency.
-
-        Args:
-            total:             Total number of claims processed.
-            preserved:         List of preserved claim strings.
-            corrected:         List of "original → corrected" strings.
-            flagged:           List of flagged (insufficient evidence) claims.
-            failed:            List of claims where correction failed.
-            original_response: Original LLM answer for comparison.
-
-        Returns:
-            Formatted correction report string.
-        """
+        """Build a human-readable correction report for transparency."""
         lines = [
             "=" * 60,
             "  CORRECTION REPORT",
             "=" * 60,
-            f"  Total claims processed : {total}",
-            f"  ✅ Preserved (supported): {len(preserved)}",
-            f"  ✏️  Corrected (halluc.)  : {len(corrected)}",
-            f"  ⚠️  Flagged (insuff. ev.): {len(flagged)}",
-            f"  ❌ Failed corrections   : {len(failed)}",
+            f"  Total claims processed  : {total}",
+            f"  SUPPORTED (preserved)   : {len(preserved)}",
+            f"  CONTRADICTED (corrected): {len(corrected)}",
+            f"  UNVERIFIABLE (flagged)  : {len(flagged)}",
+            f"  Failed corrections      : {len(failed)}",
             "=" * 60,
         ]
 
@@ -237,14 +349,14 @@ class ResponseReconstructor:
                 lines.append(f"  {i}. {c}")
 
         if flagged:
-            lines.append("\n  FLAGGED CLAIMS (insufficient evidence):")
-            for i, f in enumerate(flagged, 1):
-                lines.append(f"  {i}. {f}")
+            lines.append("\n  UNVERIFIABLE CLAIMS (insufficient evidence):")
+            for i, f_item in enumerate(flagged, 1):
+                lines.append(f"  {i}. {f_item}")
 
         if failed:
             lines.append("\n  FAILED CORRECTIONS (original retained):")
-            for i, f in enumerate(failed, 1):
-                lines.append(f"  {i}. {f}")
+            for i, f_item in enumerate(failed, 1):
+                lines.append(f"  {i}. {f_item}")
 
         lines.append("=" * 60)
         return "\n".join(lines)

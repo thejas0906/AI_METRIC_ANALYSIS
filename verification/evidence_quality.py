@@ -8,7 +8,8 @@ source type, and computes an *Evidence Quality Score* (EQS) that
 combines source reliability with passage relevance.
 
 Formula:
-    EQS = reliability_weight × min(relevance_score, 1.0)
+    normalized_relevance = raw_score / (raw_score + 0.30)  for raw_score > 0 else 0.0
+    EQS = reliability_weight × normalized_relevance
 
 The EQS is later multiplied by the NLI entailment probability to
 produce the final Claim Support Score (CSS):
@@ -27,10 +28,11 @@ Source Weight Hierarchy (from config.py):
 
 Design Decisions:
 -----------------
-- We normalize relevance_score to [0, 1] using a sigmoid function
-  so that BM25 scores from different evidence items are comparable.
+- We normalize relevance_score to [0, 1] using a saturating rational function
+  (Michaelis-Menten / Hill-type curve: raw / (raw + K) with K = 0.30)
+  so that BM25 scores from different evidence items are smoothly mapped to [0, 1].
 - The weight hierarchy is fully configurable via FrameworkConfig.
-- Future extension: use classifier to detect source type from URL
+- Heuristic classifier detects source type from URL
   (e.g., ".gov" → government, "arxiv.org" → peer_reviewed).
 """
 
@@ -135,7 +137,7 @@ class EvidenceQualityAssessor:
         for ev in retrieval_result.evidence:
             rel_weight  = self._get_reliability_weight(ev)
             norm_rel    = self._normalize_relevance(ev.relevance_score)
-            eqs         = rel_weight * norm_rel
+            eqs         = min(1.0, max(0.0, float(rel_weight * norm_rel)))
 
             se = ScoredEvidence(
                 original=ev,
@@ -246,16 +248,24 @@ class EvidenceQualityAssessor:
     @staticmethod
     def _normalize_relevance(raw_score: float) -> float:
         """
-        Map a raw BM25-style relevance score to [0, 1] using
-        a sigmoid-like normalization.
+        Map a raw BM25-style relevance score to [0, 1].
 
-        Formula:
-            norm = raw / (raw + 1)
+        The BM25-lite scores produced by EvidenceRetriever._bm25_lite()
+        depend on term overlap, doc length, and IDF. Empirically, scores for
+        genuinely relevant sentence-level passages typically fall in [0.1, 0.6].
 
-        This ensures:
-        - norm(0) = 0.0   (no relevance)
-        - norm(1) ≈ 0.5   (moderate relevance)
-        - norm(∞) → 1.0   (perfect relevance)
+        We apply a saturating rational normalization (Michaelis-Menten curve):
+
+            norm = raw / (raw + K)
+
+        with calibration constant K = 0.30. This ensures:
+            raw = 0.00 -> norm = 0.00  (no overlap)
+            raw = 0.10 -> norm = 0.25  (weak relevance)
+            raw = 0.30 -> norm = 0.50  (moderate-to-strong relevance)
+            raw = 1.00 -> norm ~= 0.77 (very strong relevance)
+            raw -> inf -> norm -> 1.00
+
+        Guaranteed bounds: 0.0 <= norm <= 1.0 for all inputs.
 
         Args:
             raw_score: BM25-lite relevance score from EvidenceItem.
@@ -265,4 +275,6 @@ class EvidenceQualityAssessor:
         """
         if raw_score <= 0:
             return 0.0
-        return raw_score / (raw_score + 1.0)
+        K = 0.30
+        norm = raw_score / (raw_score + K)
+        return min(1.0, max(0.0, float(norm)))

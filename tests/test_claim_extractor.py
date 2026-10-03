@@ -108,3 +108,35 @@ class TestClaimExtractor:
         text = "What a discovery! Einstein won the Nobel Prize in 1921."
         claims = extractor.extract(text)
         assert not any("!" in c for c in claims)
+
+    def test_offsets_are_correct(self, extractor):
+        """ClaimSpan character offsets must match the original text substring."""
+        text = "Albert Einstein was born in 1879. He won the Nobel Prize in 1921."
+        spans = extractor.extract_spans(text)
+        assert len(spans) == 2
+        for s in spans:
+            extracted_sub = text[s.start_char:s.end_char]
+            assert extracted_sub == s.original_text
+            assert s.text.rstrip(".") in extracted_sub or extracted_sub in s.text
+
+    def test_duplicate_claim_spans_preserved(self, extractor):
+        """Duplicate sentences in the text must produce separate ClaimSpan objects with distinct offsets."""
+        text = "The company was founded in 1990. The company was founded in 1990."
+        spans = extractor.extract_spans(text)
+        assert len(spans) == 2, f"Expected 2 spans, got {len(spans)}"
+        assert spans[0].claim_id == 0
+        assert spans[1].claim_id == 1
+        assert spans[0].start_char != spans[1].start_char
+        assert spans[0].end_char != spans[1].end_char
+        assert text[spans[0].start_char:spans[0].end_char] == "The company was founded in 1990."
+        assert text[spans[1].start_char:spans[1].end_char] == "The company was founded in 1990."
+
+    def test_punctuation_handling(self, extractor):
+        """Exclamations and questions filtered; factual statements properly punctuated."""
+        text = "Did you know that? Earth orbits the Sun! But gravity attracts mass."
+        spans = extractor.extract_spans(text)
+        # Questions and exclamation marks should be filtered
+        texts = [s.text for s in spans]
+        assert not any("?" in t for t in texts)
+        assert not any("!" in t for t in texts)
+        assert any("gravity" in t.lower() for t in texts)

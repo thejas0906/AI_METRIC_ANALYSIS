@@ -61,6 +61,58 @@ class DatasetSample:
     metadata:     dict           = field(default_factory=dict)
 
 
+@dataclass
+class GoldClaimAnnotation:
+    """
+    Gold standard annotation for an atomic factual claim within a complete response.
+
+    Attributes:
+        claim_text:      The exact claim text or proposition.
+        gold_label:      "SUPPORTED", "CONTRADICTED", or "UNVERIFIABLE".
+        gold_correction: Optional expected correction text if contradicted.
+    """
+    claim_text:      str
+    gold_label:      str   # "SUPPORTED" | "CONTRADICTED" | "UNVERIFIABLE"
+    gold_correction: Optional[str] = None
+
+
+@dataclass
+class ResponseEvaluationSample:
+    """
+    A complete LLM-generated response for a given question containing multiple
+    factual claims, paired with per-claim gold annotations.
+
+    Attributes:
+        question:       The prompt or question given to the LLM.
+        response:       The full multi-sentence LLM response text.
+        gold_claims:    List of GoldClaimAnnotation for claims in this response.
+        source:         Dataset or benchmark source.
+        metadata:       Additional dataset-specific fields.
+    """
+    question:    str
+    response:    str
+    gold_claims: List[GoldClaimAnnotation] = field(default_factory=list)
+    source:      str                       = "benchmark"
+    metadata:    dict                      = field(default_factory=dict)
+
+    # Backward compatibility properties
+    @property
+    def claim(self) -> str:
+        return self.response
+
+    @property
+    def context(self) -> str:
+        return self.question
+
+    @property
+    def ground_truth(self) -> bool:
+        return any(gc.gold_label == "CONTRADICTED" for gc in self.gold_claims)
+
+
+# Alias for research specification
+MultiClaimResponseSample = ResponseEvaluationSample
+
+
 # ──────────────────────────────────────────────────────────────────
 # Dataset Loader
 # ──────────────────────────────────────────────────────────────────
@@ -333,3 +385,122 @@ class DatasetLoader:
                     break
 
         return samples
+
+    def load_multiclaim_benchmark(
+        self, max_samples: Optional[int] = None
+    ) -> List[ResponseEvaluationSample]:
+        """
+        Load multi-claim benchmark responses with ground-truth per-claim annotations.
+
+        Each sample represents a full LLM response to a question with multiple
+        claims that are independently annotated as SUPPORTED, CONTRADICTED, or UNVERIFIABLE.
+
+        TruthfulQA Transformation Note:
+            When adapting TruthfulQA to multi-claim evaluation, the question prompt
+            is combined with the model's generated answer. The best truthful answer
+            provides supported claims, while common misconceptions or incorrect answers
+            provide contradicted claims. Unverifiable assertions (e.g. subjective or
+            unreferenced claims) provide unverifiable claims.
+
+        Args:
+            max_samples: Maximum number of multi-claim samples to return.
+
+        Returns:
+            List of ResponseEvaluationSample objects.
+        """
+        benchmark = [
+            ResponseEvaluationSample(
+                question="Tell me about Albert Einstein.",
+                response=(
+                    "Albert Einstein was born in 1879 in Germany. "
+                    "He worked as a patent clerk in Switzerland. "
+                    "He received the Nobel Prize in Literature in 1921. "
+                    "He spent his later career at the Institute for Advanced Study in Princeton."
+                ),
+                gold_claims=[
+                    GoldClaimAnnotation(
+                        claim_text="Albert Einstein was born in 1879 in Germany.",
+                        gold_label="SUPPORTED",
+                    ),
+                    GoldClaimAnnotation(
+                        claim_text="He worked as a patent clerk in Switzerland.",
+                        gold_label="SUPPORTED",
+                    ),
+                    GoldClaimAnnotation(
+                        claim_text="He received the Nobel Prize in Literature in 1921.",
+                        gold_label="CONTRADICTED",
+                        gold_correction="He received the Nobel Prize in Physics in 1921.",
+                    ),
+                    GoldClaimAnnotation(
+                        claim_text="He spent his later career at the Institute for Advanced Study in Princeton.",
+                        gold_label="SUPPORTED",
+                    ),
+                ],
+                source="multiclaim_benchmark",
+                metadata={"topic": "biography"},
+            ),
+            ResponseEvaluationSample(
+                question="What were the achievements of Marie Curie?",
+                response=(
+                    "Marie Curie was born in Warsaw, Poland. "
+                    "She won two Nobel Prizes in Physics and Chemistry. "
+                    "She was the first female professor at Harvard University. "
+                    "Her personal laboratory notebooks remain radioactive today."
+                ),
+                gold_claims=[
+                    GoldClaimAnnotation(
+                        claim_text="Marie Curie was born in Warsaw, Poland.",
+                        gold_label="SUPPORTED",
+                    ),
+                    GoldClaimAnnotation(
+                        claim_text="She won two Nobel Prizes in Physics and Chemistry.",
+                        gold_label="SUPPORTED",
+                    ),
+                    GoldClaimAnnotation(
+                        claim_text="She was the first female professor at Harvard University.",
+                        gold_label="CONTRADICTED",
+                        gold_correction="She was the first female professor at the University of Paris (Sorbonne).",
+                    ),
+                    GoldClaimAnnotation(
+                        claim_text="Her personal laboratory notebooks remain radioactive today.",
+                        gold_label="SUPPORTED",
+                    ),
+                ],
+                source="multiclaim_benchmark",
+                metadata={"topic": "science"},
+            ),
+            ResponseEvaluationSample(
+                question="Tell me about the Apollo 11 mission.",
+                response=(
+                    "Apollo 11 landed humans on the Moon in July 1969. "
+                    "Neil Armstrong was the commander of the mission. "
+                    "Apollo 11 was launched by the Soviet Union space program. "
+                    "The astronauts returned safely to Earth."
+                ),
+                gold_claims=[
+                    GoldClaimAnnotation(
+                        claim_text="Apollo 11 landed humans on the Moon in July 1969.",
+                        gold_label="SUPPORTED",
+                    ),
+                    GoldClaimAnnotation(
+                        claim_text="Neil Armstrong was the commander of the mission.",
+                        gold_label="SUPPORTED",
+                    ),
+                    GoldClaimAnnotation(
+                        claim_text="Apollo 11 was launched by the Soviet Union space program.",
+                        gold_label="CONTRADICTED",
+                        gold_correction="Apollo 11 was launched by the United States NASA space program.",
+                    ),
+                    GoldClaimAnnotation(
+                        claim_text="The astronauts returned safely to Earth.",
+                        gold_label="SUPPORTED",
+                    ),
+                ],
+                source="multiclaim_benchmark",
+                metadata={"topic": "space"},
+            ),
+        ]
+
+        if max_samples:
+            return benchmark[:max_samples]
+        return benchmark

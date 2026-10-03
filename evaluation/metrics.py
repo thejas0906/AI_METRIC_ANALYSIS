@@ -68,24 +68,32 @@ import numpy as np
 @dataclass
 class CorrectionOutcome:
     """
-    Per-claim data needed to compute CSR, CPR, UMR, and FRA.
+    Per-claim data needed to compute CSR, CPR, UMR, FRA, and secondary rates.
 
     Attributes:
-        claim:                 The atomic claim string.
-        ground_truth_label:    True if claim is hallucinated.
-        predicted_label:       True if framework predicted hallucination.
-        was_corrected:         True if a correction was applied.
-        post_correction_verified: True if corrected claim passed NLI verification.
-        was_preserved:         True if claim was preserved (not modified).
-        original_was_supported: True if claim was truly supported.
+        claim:                    The atomic claim string.
+        ground_truth_label:       True if claim is hallucinated / contradicted.
+        predicted_label:          True if framework predicted hallucination / contradicted.
+        was_corrected:            True if a correction was applied.
+        post_correction_verified: True if corrected claim passed independent NLI verification.
+        was_preserved:            True if claim was preserved (not modified).
+        original_was_supported:   True if claim was truly supported.
+        was_unverifiable:         True if framework classified as UNVERIFIABLE.
+        gold_label:               Optional string: "SUPPORTED", "CONTRADICTED", "UNVERIFIABLE".
+        gold_correction:          Optional external gold correction text.
+        is_ground_truth_correct:  Optional bool if external gold correction was matched.
     """
     claim:                     str
-    ground_truth_label:        bool   # True = hallucinated
-    predicted_label:           bool   # True = framework flagged as hallucinated
+    ground_truth_label:        bool   # True = hallucinated / contradicted
+    predicted_label:           bool   # True = framework flagged as contradicted
     was_corrected:             bool   = False
     post_correction_verified:  bool   = False
     was_preserved:             bool   = False
     original_was_supported:    bool   = False
+    was_unverifiable:          bool   = False
+    gold_label:                str    = ""
+    gold_correction:           Optional[str] = None
+    is_ground_truth_correct:   Optional[bool] = None
 
 
 @dataclass
@@ -93,23 +101,17 @@ class MetricsResult:
     """
     Container for all computed evaluation metrics.
 
-    Attributes:
-        accuracy:                  Hallucination Detection Accuracy (HDA)
-        precision:                 Detection Precision
-        recall:                    Detection Recall
-        f1_score:                  F1 Score
-        csr:                       Correction Success Rate
-        cpr:                       Claim Preservation Rate
-        umr:                       Unnecessary Modification Rate
-        fra:                       Final Response Accuracy
-        true_positives:            # hallucinations correctly detected
-        true_negatives:            # supported claims correctly identified
-        false_positives:           # supported claims flagged as hallucination
-        false_negatives:           # hallucinations missed
-        total_hallucinated:        Total ground-truth hallucinated claims
-        total_supported:           Total ground-truth supported claims
-        total_corrected:           Claims that were corrected
-        total_successfully_corrected: Corrections that passed verification
+    Distinguishes:
+      A. Detection correctness (HDA, precision, recall, F1)
+      B. Correction correctness (CSR, incorrect_correction_rate)
+      C. Preservation correctness (CPR)
+      D. Unnecessary modification (UMR, edit_rate)
+      E. End-to-end response quality (FRA)
+
+    Note on Correction Success Rate (CSR):
+      When external gold corrections are not provided, CSR is strictly
+      a *verifier-based evaluation* metric (independent fresh NLI verification),
+      not external ground-truth correction accuracy.
     """
     accuracy:                     float
     precision:                    float
@@ -127,6 +129,27 @@ class MetricsResult:
     total_supported:              int   = 0
     total_corrected:              int   = 0
     total_successfully_corrected: int   = 0
+    unverifiable_rate:            float = 0.0
+    incorrect_correction_rate:    float = 0.0
+    edit_rate:                    float = 0.0
+    is_verifier_based_evaluation: bool  = True
+    ground_truth_csr:             Optional[float] = None
+
+    @property
+    def detection_precision(self) -> float:
+        return self.precision
+
+    @property
+    def detection_recall(self) -> float:
+        return self.recall
+
+    @property
+    def detection_f1(self) -> float:
+        return self.f1_score
+
+    @property
+    def modification_rate(self) -> float:
+        return self.edit_rate
 
 
 # ------------------------------------------------------------------
@@ -192,18 +215,30 @@ class EvaluationMetrics:
         fra = 0.0
         total_corrected = 0
         total_successfully_corrected = 0
+        unverifiable_rate = 0.0
+        incorrect_correction_rate = 0.0
+        edit_rate = 0.0
+        ground_truth_csr = None
 
         if correction_outcomes:
-            csr, total_corrected, total_successfully_corrected = (
+            csr, total_corrected, total_successfully_corrected, incorrect_correction_rate, ground_truth_csr = (
                 self._compute_csr(correction_outcomes)
             )
             cpr, umr = self._compute_cpr_umr(correction_outcomes)
             fra      = self._compute_fra(correction_outcomes)
 
+            unverifiable_count = sum(1 for o in correction_outcomes if getattr(o, "was_unverifiable", False))
+            unverifiable_rate = unverifiable_count / len(correction_outcomes) if correction_outcomes else 0.0
+
+            total_modified = sum(1 for o in correction_outcomes if o.was_corrected)
+            edit_rate = total_modified / len(correction_outcomes) if correction_outcomes else 0.0
+
         logger.info(
             f"Metrics: Accuracy={accuracy:.3f}, P={precision:.3f}, "
             f"R={recall:.3f}, F1={f1:.3f}, CSR={csr:.3f}, "
-            f"CPR={cpr:.3f}, UMR={umr:.3f}, FRA={fra:.3f}"
+            f"CPR={cpr:.3f}, UMR={umr:.3f}, FRA={fra:.3f}, "
+            f"UnverifiableRate={unverifiable_rate:.3f}, "
+            f"IncorrectCorrectionRate={incorrect_correction_rate:.3f}"
         )
 
         return MetricsResult(
@@ -223,6 +258,11 @@ class EvaluationMetrics:
             total_supported=total_supported,
             total_corrected=total_corrected,
             total_successfully_corrected=total_successfully_corrected,
+            unverifiable_rate=unverifiable_rate,
+            incorrect_correction_rate=incorrect_correction_rate,
+            edit_rate=edit_rate,
+            is_verifier_based_evaluation=(ground_truth_csr is None),
+            ground_truth_csr=ground_truth_csr,
         )
 
     # --------------------------------------------------------------
@@ -234,24 +274,25 @@ class EvaluationMetrics:
         outcomes: List[CorrectionOutcome],
     ) -> tuple:
         """
-        Correction Success Rate (CSR):
+        Correction Success Rate (CSR) and related correction quality metrics:
 
             CSR = Corrected Hallucinated Claims / Total Hallucinated Claims
 
-        A claim "correction" counts as successful if:
-        - It was ground-truth hallucinated
-        - The framework corrected it
-        - The corrected version passed independent NLI verification
+        A claim "correction" counts as successfully verified if:
+        - It was ground-truth hallucinated / contradicted
+        - The framework applied a correction
+        - The corrected version passed independent fresh-evidence NLI verification
 
-        Args:
-            outcomes: List of CorrectionOutcome objects.
+        If external gold correction strings are provided, ground_truth_csr evaluates
+        exact or semantic match against gold correction.
 
         Returns:
-            Tuple of (CSR, total_corrected, total_successfully_corrected)
+            Tuple of (CSR, total_corrected, successfully_corrected,
+                      incorrect_correction_rate, ground_truth_csr)
         """
         total_hallucinated = sum(1 for o in outcomes if o.ground_truth_label)
         if total_hallucinated == 0:
-            return 0.0, 0, 0
+            return 0.0, 0, 0, 0.0, None
 
         total_corrected = sum(1 for o in outcomes if o.was_corrected)
 
@@ -264,7 +305,26 @@ class EvaluationMetrics:
         )
 
         csr = successfully_corrected / total_hallucinated
-        return csr, total_corrected, successfully_corrected
+
+        # Incorrect correction rate: attempted corrections that failed or were unverified
+        failed_corrections = sum(
+            1 for o in outcomes
+            if o.was_corrected and not o.post_correction_verified
+        )
+        incorrect_correction_rate = (failed_corrections / total_corrected) if total_corrected > 0 else 0.0
+
+        # Ground-truth CSR if external gold corrections were supplied
+        has_gt = any(getattr(o, "gold_correction", None) is not None for o in outcomes if o.ground_truth_label)
+        if has_gt:
+            gt_correct = sum(
+                1 for o in outcomes
+                if o.ground_truth_label and getattr(o, "is_ground_truth_correct", False)
+            )
+            ground_truth_csr = gt_correct / total_hallucinated
+        else:
+            ground_truth_csr = None
+
+        return csr, total_corrected, successfully_corrected, incorrect_correction_rate, ground_truth_csr
 
     @staticmethod
     def _compute_cpr_umr(
@@ -364,16 +424,28 @@ class EvaluationMetrics:
         print(f"  False Positives (FP) : {result.false_positives}")
         print(f"  False Negatives (FN) : {result.false_negatives}")
 
-        print("\n  -- Correction Quality ---------------------------------")
-        print(f"  Correction Success Rate  (CSR) : {result.csr:.4f}")
-        print(f"  Claim Preservation Rate  (CPR) : {result.cpr:.4f}")
-        print(f"  Unnecessary Modification (UMR) : {result.umr:.4f}")
-        print(f"  Final Response Accuracy  (FRA) : {result.fra:.4f}")
+        print("\n  -- Detection & Verification Rates ---------------------")
+        print(f"  Detection Precision                    : {result.detection_precision:.4f}")
+        print(f"  Detection Recall                       : {result.detection_recall:.4f}")
+        print(f"  Detection F1                           : {result.detection_f1:.4f}")
+        print(f"  Unverifiable Rate                      : {result.unverifiable_rate:.4f}")
+
+        print("\n  -- Correction Quality & Preservation ------------------")
+        csr_label = "Verifier-Based CSR" if result.is_verifier_based_evaluation else "Ground-Truth CSR"
+        print(f"  Correction Success Rate ({csr_label}) : {result.csr:.4f}")
+        if result.ground_truth_csr is not None:
+            print(f"  Ground-Truth CSR                       : {result.ground_truth_csr:.4f}")
+        print(f"  Incorrect Correction Rate              : {result.incorrect_correction_rate:.4f}")
+        print(f"  Claim Preservation Rate  (CPR)         : {result.cpr:.4f}")
+        print(f"  Unnecessary Modification (UMR)         : {result.umr:.4f}")
+        print(f"  Modification / Edit Rate               : {result.edit_rate:.4f}")
+        print(f"  Final Response Accuracy  (FRA)         : {result.fra:.4f}")
 
         print("\n  -- Summary Statistics ---------------------------------")
         print(f"  Total Claims Evaluated : {result.true_positives + result.true_negatives + result.false_positives + result.false_negatives}")
         print(f"  Total Hallucinated     : {result.total_hallucinated}")
         print(f"  Total Supported        : {result.total_supported}")
+        print(f"  Total Modified         : {result.total_corrected}")
         print(f"  Successfully Corrected : {result.total_successfully_corrected}")
         print("=" * 65 + "\n")
 
