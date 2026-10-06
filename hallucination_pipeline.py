@@ -198,11 +198,14 @@ class HallucinationCorrectionPipeline:
         if verbose:
             self._print_phase("PHASE 2: EVIDENCE RETRIEVAL")
 
+        self.evidence_retriever.set_context(response=llm_response, topic=query)
         result.retrieval_results = []
         for claim_text in tqdm(
             result.extracted_claims, desc="Retrieving evidence", disable=not verbose
         ):
-            rr = self.evidence_retriever.retrieve(claim_text)
+            rr = self.evidence_retriever.retrieve(
+                claim_text, context=llm_response, topic=query
+            )
             result.retrieval_results.append(rr)
 
         logger.info("Phase 2 complete: evidence retrieved for all claims.")

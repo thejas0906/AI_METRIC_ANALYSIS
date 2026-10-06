@@ -30,11 +30,12 @@ Verification labels:
 CSS = entailment_prob * EQS  (Claim Support Score)
 
 Classification thresholds (from FrameworkConfig):
-    CSS >= 0.75         ->  SUPPORTED
-    0.40 <= CSS < 0.75  ->  UNVERIFIABLE
-    CSS <  0.40         ->  further analysis: check contradiction_prob
-        contradiction_prob > 0.5  ->  CONTRADICTED
-        else                      ->  UNVERIFIABLE
+    CSS >= 0.75         ->  SUPPORTED (strong entailment)
+    0.40 <= CSS < 0.75  ->  UNVERIFIABLE (intermediate evidence quality/support)
+    weighted_contradiction >= 0.30 (contradiction_threshold) and > CSS -> CONTRADICTED
+        (Empirically calibrated to 0.30 via multiclaim benchmark evaluation to eliminate
+         EQS-weighted contradiction suppression where Wikipedia evidence caps EQS at ~0.33-0.38)
+    otherwise           ->  UNVERIFIABLE (insufficient evidence or unconfirmed contradiction)
 
 References:
 -----------
@@ -206,6 +207,10 @@ class NLIVerifier:
         best_nli  = None
         best_ev   = None
         max_contradiction = 0.0
+        has_hybrid_contradiction = False
+
+        hybrid_min_prob = getattr(self.config, "hybrid_contradiction_min_prob", 0.80)
+        hybrid_min_eqs  = getattr(self.config, "hybrid_contradiction_min_eqs", 0.30)
 
         for se in qa_result.scored_evidence:
             nli_result = self._run_nli(premise=se.passage, hypothesis=claim)
@@ -233,11 +238,22 @@ class NLIVerifier:
             if weighted_contradiction > max_contradiction:
                 max_contradiction = weighted_contradiction
 
-        label = self._classify(best_css, max_contradiction)
+            # Check hybrid rule condition: strong raw contradiction on quality evidence
+            if (
+                nli_result.contradiction_prob >= hybrid_min_prob
+                and se.evidence_quality_score >= hybrid_min_eqs
+            ):
+                has_hybrid_contradiction = True
+
+        label = self._classify(
+            best_css,
+            max_contradiction,
+            has_hybrid_contradiction=has_hybrid_contradiction,
+        )
 
         logger.info(
             f"Claim: '{claim[:50]}' -> {label} "
-            f"(CSS={best_css:.3f}, max_contra={max_contradiction:.3f})"
+            f"(CSS={best_css:.3f}, max_contra={max_contradiction:.3f}, hybrid={has_hybrid_contradiction})"
         )
 
         return ClaimVerificationResult(
@@ -406,34 +422,48 @@ class NLIVerifier:
     # Private: Classification
     # ------------------------------------------------------------------
 
-    def _classify(self, css: float, max_contradiction: float) -> VerificationLabel:
+    def _classify(
+        self,
+        css: float,
+        max_contradiction: float,
+        has_hybrid_contradiction: bool = False,
+    ) -> VerificationLabel:
         """
         Map CSS + contradiction signal to a VerificationLabel.
 
         Logic:
             strong entailment    (CSS >= css_supported)             -> SUPPORTED
             strong contradiction (max_contra >= contradiction_thresh) -> CONTRADICTED
+            hybrid contradiction (prob >= 0.80 and EQS >= 0.30)      -> CONTRADICTED
             neither sufficiently strong                              -> UNVERIFIABLE
 
-        A retrieval failure or neutral evidence must NOT automatically
-        become a hallucination / contradiction: if evidence is absent or
-        weak, both CSS and max_contradiction are low, which maps to UNVERIFIABLE.
-
         Args:
-            css:               Best Claim Support Score across evidence (bounded in [0, 1]).
-            max_contradiction: Best weighted contradiction score (bounded in [0, 1]).
+            css:                      Best Claim Support Score across evidence (bounded in [0, 1]).
+            max_contradiction:        Best weighted contradiction score (bounded in [0, 1]).
+            has_hybrid_contradiction: True if raw contradiction >= 0.80 on evidence with EQS >= 0.30.
 
         Returns:
             VerificationLabel enum value (SUPPORTED, CONTRADICTED, or UNVERIFIABLE).
         """
+        mode = getattr(self.config, "contradiction_mode", "weighted")
         contra_thresh = getattr(
             self.config, "contradiction_threshold", self.config.css_insufficient
         )
+
         if css >= self.config.css_supported:
             return VerificationLabel.SUPPORTED
-        elif max_contradiction >= contra_thresh and css < self.config.css_insufficient:
-            return VerificationLabel.CONTRADICTED
-        elif max_contradiction >= contra_thresh and max_contradiction > css:
-            return VerificationLabel.CONTRADICTED
+
+        if mode == "hybrid":
+            if has_hybrid_contradiction and css < self.config.css_supported:
+                return VerificationLabel.CONTRADICTED
+            elif max_contradiction >= contra_thresh and max_contradiction > css:
+                return VerificationLabel.CONTRADICTED
+            else:
+                return VerificationLabel.UNVERIFIABLE
         else:
-            return VerificationLabel.UNVERIFIABLE
+            if max_contradiction >= contra_thresh and css < self.config.css_insufficient:
+                return VerificationLabel.CONTRADICTED
+            elif max_contradiction >= contra_thresh and max_contradiction > css:
+                return VerificationLabel.CONTRADICTED
+            else:
+                return VerificationLabel.UNVERIFIABLE

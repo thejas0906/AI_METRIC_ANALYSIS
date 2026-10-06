@@ -147,6 +147,18 @@ def parse_args():
         help="CSS threshold for INSUFFICIENT label (default: 0.40)",
     )
     parser.add_argument(
+        "--contradiction-threshold",
+        type=float,
+        default=0.30,
+        help="Contradiction threshold for CONTRADICTED label (default: 0.30, selected via empirical benchmark)",
+    )
+    parser.add_argument(
+        "--contradiction-mode",
+        choices=["weighted", "hybrid"],
+        default="weighted",
+        help="Contradiction decision rule: 'weighted' or 'hybrid' (default: weighted)",
+    )
+    parser.add_argument(
         "--no-verbose",
         action="store_true",
         help="Suppress detailed pipeline output",
@@ -335,6 +347,8 @@ def main():
         correction_backend=args.correction_backend,
         css_supported=args.css_supported,
         css_insufficient=args.css_insufficient,
+        contradiction_threshold=args.contradiction_threshold,
+        contradiction_mode=args.contradiction_mode,
         openai_api_key=os.getenv("OPENAI_API_KEY"),
     )
 

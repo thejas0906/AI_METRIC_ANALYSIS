@@ -36,11 +36,12 @@ References:
 - MediaWiki API: https://www.mediawiki.org/wiki/API:Search
 """
 
+import os
 import re
 import math
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Dict
 from loguru import logger
 
 try:
@@ -124,29 +125,129 @@ class EvidenceRetriever:
             )
 
         logger.info("EvidenceRetriever initialized.")
+        self._current_response: str = ""
+        self._current_topic: str = ""
+        self._dominant_subject: Optional[str] = None
+
+        # Persistent Wikipedia cache
+        cache_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"
+        )
+        os.makedirs(cache_dir, exist_ok=True)
+        self._cache_file = os.path.join(cache_dir, "wikipedia_cache.json")
+        self._search_cache: Dict[str, list] = {}
+        self._page_cache: Dict[str, dict] = {}
+        if os.path.exists(self._cache_file):
+            try:
+                import json
+                with open(self._cache_file, "r", encoding="utf-8") as f:
+                    _cdata = json.load(f)
+                    self._search_cache = _cdata.get("searches", {})
+                    self._page_cache = _cdata.get("pages", {})
+            except Exception:
+                pass
+
+    def _save_cache(self) -> None:
+        """Persist Wikipedia cache to disk."""
+        try:
+            import json
+            with open(self._cache_file, "w", encoding="utf-8") as f:
+                json.dump({"searches": self._search_cache, "pages": self._page_cache}, f)
+        except Exception:
+            pass
+
+    # ──────────────────────────────────────────────────────────────
+    # Context Management
+    # ──────────────────────────────────────────────────────────────
+
+    def set_context(self, response: str = "", topic: str = "") -> None:
+        """
+        Set the active response and topic context for the retriever.
+        Used to resolve pronouns and preserve dominant named entities across atomic claims.
+        """
+        self._current_response = response or ""
+        self._current_topic = topic or ""
+        self._dominant_subject = self._extract_dominant_subject(self._current_response, self._current_topic)
+
+    def _extract_dominant_subject(self, response: str = "", topic: str = "") -> Optional[str]:
+        """
+        Extract the dominant named entity or subject from the query topic or original response.
+        Used to resolve pronoun-only claims and anchor retrieval to the correct topic.
+        """
+        # 1. First check topic/query
+        if topic and topic.strip():
+            doc_topic = self.nlp(topic.strip())
+            for ent in doc_topic.ents:
+                if ent.label_ in {"PERSON", "ORG", "GPE", "WORK_OF_ART", "PRODUCT", "EVENT"}:
+                    return ent.text.strip()
+            for chunk in doc_topic.noun_chunks:
+                clean_words = [
+                    t.text for t in chunk 
+                    if not t.is_stop and t.pos_ in {"NOUN", "PROPN"}
+                ]
+                if clean_words:
+                    return " ".join(clean_words).strip()
+
+        # 2. Check response
+        if response and response.strip():
+            doc_resp = self.nlp(response.strip())
+            ent_counts: Dict[str, int] = {}
+            for ent in doc_resp.ents:
+                if ent.label_ in {"PERSON", "ORG", "WORK_OF_ART"}:
+                    ent_text = ent.text.strip()
+                    ent_counts[ent_text] = ent_counts.get(ent_text, 0) + 1
+            if ent_counts:
+                return max(ent_counts, key=ent_counts.get)
+            
+            for sent in doc_resp.sents:
+                for ent in sent.ents:
+                    if ent.label_ not in {"CARDINAL", "ORDINAL", "DATE", "TIME", "PERCENT", "QUANTITY"}:
+                        return ent.text.strip()
+                for chunk in sent.noun_chunks:
+                    clean_words = [
+                        t.text for t in chunk 
+                        if not t.is_stop and t.pos_ in {"NOUN", "PROPN"}
+                    ]
+                    if clean_words:
+                        return " ".join(clean_words).strip()
+                break
+
+        return None
 
     # ──────────────────────────────────────────────────────────────
     # Public API
     # ──────────────────────────────────────────────────────────────
 
-    def retrieve(self, claim: str) -> RetrievalResult:
+    def retrieve(
+        self,
+        claim: str,
+        context: Optional[str] = None,
+        topic: Optional[str] = None,
+    ) -> RetrievalResult:
         """
         Retrieve top-K evidence passages from Wikipedia for a single claim.
 
         Args:
-            claim: An atomic factual claim string.
+            claim:   An atomic factual claim string.
+            context: Optional full response text.
+            topic:   Optional query/topic.
 
         Returns:
             RetrievalResult with claim, evidence list, and query used.
         """
+        if context or topic:
+            self.set_context(response=context or "", topic=topic or "")
+
         # Step 1: Build a focused search query from claim entities
-        query = self._build_query(claim)
-        logger.debug(f"Query for claim '{claim[:50]}': '{query}'")
+        query = self._build_query(claim, context=context, topic=topic)
+        logger.info(f"Generated query: '{query}'")
 
         result = RetrievalResult(claim=claim, query_used=query)
 
         # Step 2: Search Wikipedia and retrieve candidate pages
         pages = self._search_wikipedia(query)
+        page_titles = [p[0] for p in pages]
+        logger.info(f"Retrieved page titles: {page_titles}")
 
         # Step 3: For each page, extract the most relevant passages
         all_evidence: List[EvidenceItem] = []
@@ -156,74 +257,150 @@ class EvidenceRetriever:
             # Respect Wikipedia rate limits
             time.sleep(0.1)
 
-        # Step 4: Sort by relevance and keep top-K
+        # Step 4: Sort by relevance and keep top-K (prioritize non-zero relevance)
         all_evidence.sort(key=lambda e: e.relevance_score, reverse=True)
-        result.evidence = all_evidence[: self.config.wikipedia_top_k]
+        relevant_evidence = [e for e in all_evidence if e.relevance_score > 0]
+        result.evidence = (relevant_evidence if relevant_evidence else all_evidence)[: self.config.wikipedia_top_k]
 
-        logger.info(
-            f"Retrieved {len(result.evidence)} evidence items for: "
-            f"'{claim[:50]}...'"
-        )
+        logger.info(f"Retrieved evidence count: {len(result.evidence)}")
         return result
 
-    def retrieve_batch(self, claims: List[str]) -> List[RetrievalResult]:
+    def retrieve_batch(
+        self,
+        claims: List[str],
+        context: Optional[str] = None,
+        topic: Optional[str] = None,
+    ) -> List[RetrievalResult]:
         """
         Retrieve evidence for a list of claims.
 
         Args:
-            claims: List of atomic factual claim strings.
+            claims:  List of atomic factual claim strings.
+            context: Optional full response text.
+            topic:   Optional query/topic.
 
         Returns:
             List of RetrievalResult objects, one per claim.
         """
+        if context or topic:
+            self.set_context(response=context or "", topic=topic or "")
         results = []
         for i, claim in enumerate(claims):
             logger.info(f"Retrieving evidence for claim {i+1}/{len(claims)}")
-            results.append(self.retrieve(claim))
+            results.append(self.retrieve(claim, context=context, topic=topic))
         return results
 
     # ──────────────────────────────────────────────────────────────
     # Private Helpers
     # ──────────────────────────────────────────────────────────────
 
-    def _build_query(self, claim: str) -> str:
+    def _build_query(
+        self,
+        claim: str,
+        context: Optional[str] = None,
+        topic: Optional[str] = None,
+    ) -> str:
         """
         Extract named entities and key noun phrases from the claim
         to construct a focused Wikipedia search query.
 
-        Strategy:
-        1. Parse claim with spaCy.
-        2. Extract named entities (PERSON, ORG, GPE, DATE, etc.)
-        3. If no entities, fall back to noun chunks.
-        4. Join top-3 keywords as the query.
-
-        Args:
-            claim: Atomic factual claim string.
-
-        Returns:
-            Search query string.
+        Improvements:
+        - Resolves pronoun-only claims ("He", "She", "They", etc.) using the dominant subject.
+        - Preserves dominant named entities from the original response/topic.
+        - Filters out low-information entities like CARDINAL values ("one", "two").
+        - Adds descriptive noun chunks when entities are sparse.
         """
+        if context or topic:
+            self.set_context(response=context or "", topic=topic or "")
+
         doc = self.nlp(claim)
 
-        # Collect named entities (e.g., "Albert Einstein", "Germany", "1879")
-        entities = [ent.text for ent in doc.ents]
+        LOW_INFO_LABELS = {"CARDINAL", "ORDINAL", "PERCENT", "QUANTITY", "TIME"}
+        NUMBER_WORDS = {
+            "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+            "first", "second", "third", "fourth", "fifth"
+        }
+        PRONOUNS = {"he", "she", "they", "it", "his", "her", "their", "its", "him", "them"}
 
-        if entities:
-            # Use the first 3 entities as the query
-            query = " ".join(entities[:3])
+        # 1. Collect high-information named entities from claim
+        valid_entities: List[str] = []
+        for ent in doc.ents:
+            if ent.label_ in LOW_INFO_LABELS:
+                continue
+            cleaned = ent.text.strip()
+            if cleaned.lower() in NUMBER_WORDS or cleaned.isdigit():
+                continue
+            if cleaned not in valid_entities:
+                valid_entities.append(cleaned)
+
+        # 2. Check for pronoun subjects or missing dominant subject
+        first_tokens = [t.text.lower() for t in doc[:3]]
+        has_pronoun = any(p in PRONOUNS for p in first_tokens)
+        
+        dominant = self._dominant_subject or self._extract_dominant_subject(self._current_response, self._current_topic)
+
+        query_tokens: List[str] = []
+
+        # If dominant subject exists, preserve/anchor with it:
+        # especially if the claim starts with a pronoun, lacks high-value entities, or lacks the dominant subject
+        if dominant:
+            dominant_lower = dominant.lower()
+            claim_has_dominant = dominant_lower in claim.lower()
+            if has_pronoun or not claim_has_dominant or not valid_entities:
+                query_tokens.append(dominant)
+
+        for ent in valid_entities:
+            # Avoid redundant duplicate of dominant subject
+            if dominant and (ent.lower() in dominant.lower() or dominant.lower() in ent.lower()):
+                if dominant not in query_tokens:
+                    query_tokens.append(dominant)
+                continue
+            if ent not in query_tokens:
+                query_tokens.append(ent)
+
+        # 3. If query has fewer than 3 terms, enrich with informative noun chunks
+        if len(query_tokens) < 3:
+            for chunk in doc.noun_chunks:
+                clean_chunk_words = [
+                    t.text for t in chunk
+                    if not t.is_stop 
+                    and t.pos_ in {"NOUN", "PROPN"}
+                    and t.text.lower() not in NUMBER_WORDS
+                    and t.text.lower() not in PRONOUNS
+                ]
+                chunk_str = " ".join(clean_chunk_words).strip()
+                if (
+                    chunk_str 
+                    and chunk_str.lower() not in " ".join(query_tokens).lower() 
+                    and len(chunk_str) > 2
+                ):
+                    query_tokens.append(chunk_str)
+                    if len(query_tokens) >= 4:
+                        break
+
+        # Fallback if still empty
+        if not query_tokens:
+            content_words = [
+                t.text for t in doc
+                if not t.is_stop and not t.is_punct 
+                and t.text.lower() not in NUMBER_WORDS 
+                and t.text.lower() not in PRONOUNS
+            ]
+            query = " ".join(content_words[:4]) if content_words else claim[:80]
         else:
-            # Fallback: use noun chunks (e.g., "the Nobel Prize")
-            noun_chunks = [chunk.root.text for chunk in doc.noun_chunks]
-            query = " ".join(noun_chunks[:3]) if noun_chunks else claim[:80]
+            query = " ".join(query_tokens[:4])
 
         return query.strip()
 
     def _search_wikipedia(self, query: str) -> List[tuple]:
         """
-        Search Wikipedia for pages matching the query.
+        Search Wikipedia for pages matching the query using full-text search.
         Returns a list of (page_title, page_url) tuples.
 
-        Uses MediaWiki's search API via the wikipedia-api library.
+        Uses MediaWiki's full-text search API:
+            action=query
+            list=search
+            srsearch=<query>
 
         Args:
             query: Search query string.
@@ -231,15 +408,20 @@ class EvidenceRetriever:
         Returns:
             List of (title, url) tuples for candidate pages.
         """
+        # Check search cache first
+        cache_key = f"{query}__topk{self.config.wikipedia_top_k}"
+        if cache_key in self._search_cache:
+            return [tuple(x) for x in self._search_cache[cache_key]]
+
         import requests
 
-        # Wikipedia OpenSearch API endpoint
         api_url = "https://en.wikipedia.org/w/api.php"
+        limit = max(self.config.wikipedia_top_k, 3)
         params = {
-            "action": "opensearch",
-            "search": query,
-            "limit": 3,          # top-3 candidate pages
-            "namespace": 0,
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "srlimit": limit,
             "format": "json",
         }
 
@@ -266,10 +448,29 @@ class EvidenceRetriever:
                     continue
                 resp.raise_for_status()
                 data = resp.json()
-                # OpenSearch returns: [query, [titles], [descriptions], [urls]]
-                titles = data[1]
-                urls   = data[3]
-                return list(zip(titles, urls))
+                search_results = data.get("query", {}).get("search", [])
+                pages = []
+                for item in search_results:
+                    title = item.get("title", "").strip()
+                    if title:
+                        url = f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
+                        pages.append((title, url))
+
+                # Also include dominant subject page if known and exists
+                if self._dominant_subject:
+                    dom_title = self._dominant_subject.strip()
+                    existing_lower = {p[0].lower() for p in pages}
+                    if dom_title.lower() not in existing_lower:
+                        try:
+                            dom_page = self.wiki.page(dom_title)
+                            if dom_page.exists():
+                                pages.append((dom_page.title, dom_page.fullurl))
+                        except Exception:
+                            pass
+
+                self._search_cache[cache_key] = pages
+                self._save_cache()
+                return pages
             except Exception as e:
                 if attempt == 2:
                     logger.warning(f"Wikipedia search failed for query '{query}': {e}")
@@ -292,33 +493,67 @@ class EvidenceRetriever:
         Returns:
             List of EvidenceItem objects with scored passages.
         """
-        # Fetch page via wikipedia-api
-        page = self.wiki.page(page_title)
-        if not page.exists():
-            logger.debug(f"Wikipedia page not found: {page_title}")
-            return []
+        # Check page cache
+        if page_title in self._page_cache:
+            p_data = self._page_cache[page_title]
+            if not p_data.get("exists", False):
+                return []
+            full_text = p_data.get("summary", "")
+            page_url = p_data.get("fullurl", "")
+            page_real_title = p_data.get("title", page_title)
+        else:
+            page = self.wiki.page(page_title)
+            if not page.exists():
+                logger.debug(f"Wikipedia page not found: {page_title}")
+                self._page_cache[page_title] = {"exists": False}
+                self._save_cache()
+                return []
+            full_text = page.summary
+            page_url = page.fullurl
+            page_real_title = page.title
+            self._page_cache[page_title] = {
+                "exists": True,
+                "summary": full_text,
+                "fullurl": page_url,
+                "title": page_real_title,
+            }
+            self._save_cache()
 
         # Split page text into sentences using simple regex
-        full_text = page.summary
         sentences = re.split(r"(?<=[.!?])\s+", full_text)
 
         evidence_items = []
-        claim_tokens = set(claim.lower().split())
+        
+        # Focus term overlap on meaningful content tokens (filtering trivial stopwords)
+        from spacy.lang.en.stop_words import STOP_WORDS
+        claim_tokens = {
+            re.sub(r"\W+", "", w.lower()) 
+            for w in claim.split() 
+            if w.lower() not in STOP_WORDS and len(w) > 1
+        }
+        claim_tokens.discard("")
+        if not claim_tokens:
+            claim_tokens = {re.sub(r"\W+", "", w.lower()) for w in claim.split() if len(w) > 1}
+            claim_tokens.discard("")
 
         for sent in sentences:
             if len(sent) < 20:   # skip trivially short sentences
                 continue
 
-            # Compute simple term-overlap relevance score
-            sent_tokens = set(sent.lower().split())
+            sent_tokens = {
+                re.sub(r"\W+", "", w.lower()) 
+                for w in sent.split() 
+                if w.lower() not in STOP_WORDS and len(w) > 1
+            }
+            sent_tokens.discard("")
             overlap = len(claim_tokens & sent_tokens)
             score = self._bm25_lite(overlap, len(sent_tokens), len(claim_tokens))
 
             item = EvidenceItem(
                 passage=sent.strip(),
-                source_url=page.fullurl,
+                source_url=page_url,
                 source_type="wikipedia",
-                page_title=page.title,
+                page_title=page_real_title,
                 relevance_score=score,
                 reliability_weight=EVIDENCE_WEIGHTS.get("wikipedia", 0.8),
             )
@@ -360,3 +595,4 @@ class EvidenceRetriever:
         )
 
         return idf * tf
+
