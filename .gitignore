@@ -7,6 +7,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
 *.pyo
 *.pyd
 .Python
@@ -24,20 +25,39 @@ venv.bak/
 .env
 # .env.example is intentionally tracked (no real secrets)
 
-# ── Experiment Results (generated at runtime) ─────────────────
-results/*.json
-results/*.csv
-results/*.png
-results/*.pdf
-# Keep the folder itself tracked
-!results/.gitkeep
-
 # ── Logs (generated at runtime) ───────────────────────────────
 logs/
 *.log
 
+# ── Temporary diagnostics ─────────────────────────────────────
+results/audit_archive/
+results/debug/
+results/diagnostics/
+results/temp/
+results/cache/
+
+# ── Benchmark investigation artifacts ─────────────────────────
+audit_*.json
+audit_*.csv
+audit_*.txt
+support_diagnostic_*
+retrieval_audit_*
+forensic_audit_*
+threshold_analysis_*
+calibration_*
+diagnostic_*
+debug_*
+
+# ── Targeted cache exclusions (avoid blanket *.pkl / *.pickle) ─
+results/audit_archive/*.pkl
+results/audit_archive/*.pickle
+results/cache/*.pkl
+results/cache/*.pickle
+cache/*.pkl
+tmp/*.pkl
+scratch/*.pkl
+
 # ── HuggingFace / Torch Model Cache ──────────────────────────
-# These are downloaded automatically and can be very large (>1 GB)
 .cache/
 models/
 *.bin
@@ -65,24 +85,105 @@ dist/
 MANIFEST
 wheels/
 
-# ── IDE / Editor ──────────────────────────────────────────────
+# ── OS files ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# ── IDE files ─────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-.DS_Store
-Thumbs.db
 
-# ── Windows ───────────────────────────────────────────────────
-desktop.ini
-ehthumbs.db
+# ── Temporary experiment outputs ──────────────────────────────
+tmp/
+temp/
+scratch/
+experiments/
 
-# ── spaCy downloaded models ───────────────────────────────────
-# These are installed into site-packages, not the project dir.
-# Nothing to ignore here, but keeping comment for clarity.
+# ── Preserved & Tracked Benchmark Deliverables ────────────────
+# Keep the folder itself tracked
+!results/.gitkeep
 
-# ── Data (large raw datasets — keep custom_claims.csv tracked) ─
-# Uncomment if you start downloading FEVER/TruthfulQA locally:
-# data/fever/
-# data/truthfulqa/
+# Explicitly track essential final benchmark data and paper figures
+!results/multiclaim_results.json
+!results/multiclaim_metrics.csv
+!results/final_figures/
+!results/final_figures/*
+!results/final_figures/**/*
+
+# ==========================================================
+# Research Audit / Debug Scripts (not part of final system)
+# ==========================================================
+
+analyze_all_unverifiable.py
+audit7_diagnose_unverifiable.py
+audit_all_84.py
+audit_current_unverifiable.py
+audit_extractor.py
+audit_pipeline_84.py
+bucket_forensic_claims.py
+classify_7buckets.py
+diagnose_demo.py
+dump_claims.py
+dump_new_unv.py
+fresh_audit_task.py
+generate_forensic_data.py
+inspect_audit.py
+inspect_audit_ab.py
+inspect_audit_cd.py
+inspect_diag_records.py
+inspect_mr.py
+inspect_new_unv.py
+print_bucket_d.py
+print_categorized.py
+print_categorized_1_25.py
+print_categorized_1_9.py
+print_unv.py
+run_audit_classification.py
+run_audit_unverifiable_all.py
+run_support_diag.py
+scratch_categorize.py
+simulate_options.py
+
+# ==========================================================
+# Experimental Calibration Scripts
+# (Keep only if discussed in paper)
+# ==========================================================
+
+calibrate_support_thresholds.py
+eval_css_thresholds.py
+run_threshold_grid.py
+
+# ==========================================================
+# Temporary Test Scripts
+# ==========================================================
+
+test_extraction_impact.py
+test_improved_retrieval.py
+test_new_retriever_logic.py
+test_quick_retrieval.py
+test_sanity.py
+test_snippet.py
+
+# ==========================================================
+# Audit Archive
+# ==========================================================
+
+results/audit_archive/
+
+# ==========================================================
+# KEEP THESE (final deliverables)
+# ==========================================================
+
+!generate_final_figures.py
+
+!results/
+!results/multiclaim_results.json
+!results/multiclaim_metrics.csv
+
+!results/final_figures/
+!results/final_figures/**

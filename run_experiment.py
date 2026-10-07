@@ -48,7 +48,7 @@ if sys.platform == "win32":
 # ── Add project root to path ──────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import FrameworkConfig
+from config import FrameworkConfig, CSS_SUPPORTED_THRESHOLD
 from hallucination_pipeline import HallucinationCorrectionPipeline
 from evaluation.metrics import EvaluationMetrics
 from evaluation.dataset_loader import DatasetLoader
@@ -137,8 +137,8 @@ def parse_args():
     parser.add_argument(
         "--css-supported",
         type=float,
-        default=0.75,
-        help="CSS threshold for SUPPORTED label (default: 0.75)",
+        default=CSS_SUPPORTED_THRESHOLD,
+        help="CSS threshold for SUPPORTED label (default: 0.30)",
     )
     parser.add_argument(
         "--css-insufficient",

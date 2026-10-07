@@ -1,0 +1,13 @@
+Metric,Value,Category,Evaluation Type,Description
+Hallucination Detection Accuracy (HDA),0.8690476190476191,Ground Truth,ground_truth,Fraction of claims correctly classified (TP+TN)/Total
+Precision,0.7894736842105263,Ground Truth,ground_truth,Precision of hallucination detection TP/(TP+FP)
+Recall,0.6818181818181818,Ground Truth,ground_truth,Recall of hallucination detection TP/(TP+FN)
+F1 Score,0.7317073170731707,Ground Truth,ground_truth,Harmonic mean of Precision & Recall
+CSR_GT (Ground Truth CSR),0.0,Ground Truth,ground_truth,Correctly corrected hallucinations / total GT hallucinations (matches gold targets)
+CPR_GT (Claim Preservation Rate),0.967741935483871,Ground Truth,ground_truth,Preserved supported claims / total GT supported claims
+UMR_GT (Unnecessary Modification Rate),0.03225806451612903,Ground Truth,ground_truth,Modified supported claims / total GT supported claims (1 - CPR)
+FRA_GT (Ground Truth Final Accuracy),0.5119047619047619,Ground Truth,ground_truth,Preserved supported + GT corrected / total claims
+CSR_Verifier (Claims Accepted / Modified),0.7272727272727273,Internal Verifier,internal_verifier,Claims accepted by Phase-7 NLI / total claims modified (Self-Verification)
+Acceptance Rate,0.7272727272727273,Internal Verifier,internal_verifier,Fraction of modified claims accepted by Phase-7 NLI
+Verification Pass Rate,0.7272727272727273,Internal Verifier,internal_verifier,Pass rate of Phase-7 fresh retrieval independent verification
+FRA_Verifier (Final Accuracy by Verifier),0.5952380952380952,Internal Verifier,internal_verifier,Final response accuracy evaluated by internal verifier

@@ -29,7 +29,7 @@ NLI_BATCH_SIZE = 4            # Batch size for NLI inference (laptop-friendly)
 NLI_DEVICE = "cpu"            # Use "cuda" if GPU is available
 
 
-CSS_SUPPORTED_THRESHOLD    = 0.75   # CSS >= 0.75  → SUPPORTED (strong entailment)
+CSS_SUPPORTED_THRESHOLD    = 0.30   # CSS >= 0.30  → SUPPORTED (strong entailment)
 CSS_INSUFFICIENT_THRESHOLD = 0.40   # 0.40 <= CSS < 0.75 → UNVERIFIABLE
 # Contradiction classification threshold:
 # Calibrated to 0.30 via empirical multiclaim benchmark evaluation.
