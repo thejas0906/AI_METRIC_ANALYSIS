@@ -1,0 +1,19 @@
+{
+  "bench_samples": 22,
+  "bench_claims_count": 0,
+  "bench_labels": {},
+  "loader_samples": 20,
+  "loader_claims_count": 80,
+  "loader_labels": {
+    "SUPPORTED": 58,
+    "CONTRADICTED": 20,
+    "UNVERIFIABLE": 2
+  },
+  "pkl_samples": 20,
+  "total_extracted_claims": 84,
+  "matched_labels": {
+    "SUPPORTED": 60,
+    "CONTRADICTED": 22,
+    "UNVERIFIABLE": 2
+  }
+}

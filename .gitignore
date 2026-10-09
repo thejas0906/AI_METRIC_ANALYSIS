@@ -1,9 +1,7 @@
-# ============================================================
-# .gitignore — Selective Evidence-Guided Hallucination
-#              Correction Framework
-# ============================================================
+# ==========================================================
+# Python
+# ==========================================================
 
-# ── Python ───────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
@@ -12,111 +10,63 @@ __pycache__/
 *.pyd
 .Python
 
-# ── Virtual Environments ──────────────────────────────────────
+# ==========================================================
+# Virtual Environments
+# ==========================================================
+
 venv/
 .venv/
 env/
-.env/
 ENV/
-env.bak/
-venv.bak/
 
-# ── Environment Variables (contains API keys) ─────────────────
-.env
-# .env.example is intentionally tracked (no real secrets)
+# ==========================================================
+# Logs
+# ==========================================================
 
-# ── Logs (generated at runtime) ───────────────────────────────
 logs/
 *.log
 
-# ── Temporary diagnostics ─────────────────────────────────────
+# ==========================================================
+# IDE / Editor
+# ==========================================================
+
+.vscode/
+.idea/
+
+*.swp
+*.swo
+*~
+
+# ==========================================================
+# OS Files
+# ==========================================================
+
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# ==========================================================
+# Temporary Folders
+# ==========================================================
+
+tmp/
+temp/
+scratch/
+experiments/
+
+# ==========================================================
+# Diagnostic / Audit Archives
+# ==========================================================
+
 results/audit_archive/
 results/debug/
 results/diagnostics/
 results/temp/
 results/cache/
 
-# ── Benchmark investigation artifacts ─────────────────────────
-audit_*.json
-audit_*.csv
-audit_*.txt
-support_diagnostic_*
-retrieval_audit_*
-forensic_audit_*
-threshold_analysis_*
-calibration_*
-diagnostic_*
-debug_*
-
-# ── Targeted cache exclusions (avoid blanket *.pkl / *.pickle) ─
-results/audit_archive/*.pkl
-results/audit_archive/*.pickle
-results/cache/*.pkl
-results/cache/*.pickle
-cache/*.pkl
-tmp/*.pkl
-scratch/*.pkl
-
-# ── HuggingFace / Torch Model Cache ──────────────────────────
-.cache/
-models/
-*.bin
-*.safetensors
-*.ckpt
-*.pt
-*.pth
-
-# ── Jupyter Notebooks ─────────────────────────────────────────
-.ipynb_checkpoints/
-*.ipynb
-
-# ── pytest / Testing ──────────────────────────────────────────
-.pytest_cache/
-.coverage
-htmlcov/
-coverage.xml
-*.cover
-
-# ── Build / Distribution ──────────────────────────────────────
-build/
-dist/
-*.egg-info/
-*.egg
-MANIFEST
-wheels/
-
-# ── OS files ──────────────────────────────────────────────────
-.DS_Store
-Thumbs.db
-desktop.ini
-ehthumbs.db
-
-# ── IDE files ─────────────────────────────────────────────────
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# ── Temporary experiment outputs ──────────────────────────────
-tmp/
-temp/
-scratch/
-experiments/
-
-# ── Preserved & Tracked Benchmark Deliverables ────────────────
-# Keep the folder itself tracked
-!results/.gitkeep
-
-# Explicitly track essential final benchmark data and paper figures
-!results/multiclaim_results.json
-!results/multiclaim_metrics.csv
-!results/final_figures/
-!results/final_figures/*
-!results/final_figures/**/*
-
 # ==========================================================
-# Research Audit / Debug Scripts (not part of final system)
+# Audit & Investigation Scripts
 # ==========================================================
 
 analyze_all_unverifiable.py
@@ -125,33 +75,39 @@ audit_all_84.py
 audit_current_unverifiable.py
 audit_extractor.py
 audit_pipeline_84.py
+
 bucket_forensic_claims.py
 classify_7buckets.py
+
 diagnose_demo.py
 dump_claims.py
 dump_new_unv.py
+
 fresh_audit_task.py
 generate_forensic_data.py
+
 inspect_audit.py
 inspect_audit_ab.py
 inspect_audit_cd.py
 inspect_diag_records.py
 inspect_mr.py
 inspect_new_unv.py
+
 print_bucket_d.py
 print_categorized.py
 print_categorized_1_25.py
 print_categorized_1_9.py
 print_unv.py
+
 run_audit_classification.py
 run_audit_unverifiable_all.py
 run_support_diag.py
+
 scratch_categorize.py
 simulate_options.py
 
 # ==========================================================
-# Experimental Calibration Scripts
-# (Keep only if discussed in paper)
+# Threshold Calibration / Experimental Scripts
 # ==========================================================
 
 calibrate_support_thresholds.py
@@ -159,7 +115,7 @@ eval_css_thresholds.py
 run_threshold_grid.py
 
 # ==========================================================
-# Temporary Test Scripts
+# Experimental Test Scripts
 # ==========================================================
 
 test_extraction_impact.py
@@ -170,16 +126,49 @@ test_sanity.py
 test_snippet.py
 
 # ==========================================================
-# Audit Archive
+# Cache / Serialized Temporary Files
 # ==========================================================
 
-results/audit_archive/
+results/audit_archive/*.pkl
+results/audit_archive/*.pickle
+
+results/cache/*.pkl
+results/cache/*.pickle
+
+cache/*.pkl
+cache/*.pickle
+
+tmp/*.pkl
+tmp/*.pickle
+
+scratch/*.pkl
+scratch/*.pickle
 
 # ==========================================================
-# KEEP THESE (final deliverables)
+# Generated Audit Files
+# ==========================================================
+
+audit_*.json
+audit_*.csv
+audit_*.txt
+
+diagnostic_*.json
+diagnostic_*.csv
+diagnostic_*.txt
+
+forensic_*.json
+forensic_*.csv
+
+retrieval_audit_*.json
+support_diagnostic_*.json
+
+# ==========================================================
+# KEEP FINAL RESEARCH DELIVERABLES
 # ==========================================================
 
 !generate_final_figures.py
+!run_consistency_audit.py
+!verify_bench_outcomes.py
 
 !results/
 !results/multiclaim_results.json

@@ -1,0 +1,88 @@
+[
+  {
+    "threshold": 0.3,
+    "supported": 29,
+    "contradicted": 15,
+    "unverifiable": 40,
+    "tp": 12,
+    "fp": 3,
+    "fn": 10,
+    "tn": 59,
+    "precision": 0.8,
+    "recall": 0.5454545454545454,
+    "f1": 0.6486486486486486,
+    "accuracy": 0.8452380952380952,
+    "cpr": 0.9516129032258065,
+    "umr": 0.04838709677419355,
+    "fp_claims": [
+      "published the first widely accepted periodic table.",
+      "Water at standard atmospheric pressure freezes at zero degrees Celsius.",
+      "DNA carries genetic instructions utilized in the growth and reproduction of living organisms."
+    ]
+  },
+  {
+    "threshold": 0.35,
+    "supported": 17,
+    "contradicted": 15,
+    "unverifiable": 52,
+    "tp": 12,
+    "fp": 3,
+    "fn": 10,
+    "tn": 59,
+    "precision": 0.8,
+    "recall": 0.5454545454545454,
+    "f1": 0.6486486486486486,
+    "accuracy": 0.8452380952380952,
+    "cpr": 0.9516129032258065,
+    "umr": 0.04838709677419355,
+    "fp_claims": [
+      "published the first widely accepted periodic table.",
+      "Water at standard atmospheric pressure freezes at zero degrees Celsius.",
+      "DNA carries genetic instructions utilized in the growth and reproduction of living organisms."
+    ]
+  },
+  {
+    "threshold": 0.4,
+    "supported": 6,
+    "contradicted": 17,
+    "unverifiable": 61,
+    "tp": 13,
+    "fp": 4,
+    "fn": 9,
+    "tn": 58,
+    "precision": 0.7647058823529411,
+    "recall": 0.5909090909090909,
+    "f1": 0.6666666666666667,
+    "accuracy": 0.8452380952380952,
+    "cpr": 0.9354838709677419,
+    "umr": 0.06451612903225806,
+    "fp_claims": [
+      "published the first widely accepted periodic table.",
+      "Water at standard atmospheric pressure freezes at zero degrees Celsius.",
+      "DNA carries genetic instructions utilized in the growth and reproduction of living organisms.",
+      "Mount Everest is the highest mountain peak above sea level on Earth."
+    ]
+  },
+  {
+    "threshold": 0.45,
+    "supported": 2,
+    "contradicted": 17,
+    "unverifiable": 65,
+    "tp": 13,
+    "fp": 4,
+    "fn": 9,
+    "tn": 58,
+    "precision": 0.7647058823529411,
+    "recall": 0.5909090909090909,
+    "f1": 0.6666666666666667,
+    "accuracy": 0.8452380952380952,
+    "cpr": 0.9354838709677419,
+    "umr": 0.06451612903225806,
+    "fp_claims": [
+      "published the first widely accepted periodic table.",
+      "Water at standard atmospheric pressure freezes at zero degrees Celsius.",
+      "DNA carries genetic instructions utilized in the growth and reproduction of living organisms.",
+      "Mount Everest is the highest mountain peak above sea level on Earth."
+    ]
+  }
+]
